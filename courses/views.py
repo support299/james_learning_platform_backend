@@ -1,11 +1,16 @@
 from django.db import transaction
 from django.shortcuts import get_object_or_404
-from rest_framework import status, viewsets
+from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from .models import Course, Lesson
-from .serializers import CourseSerializer, LessonSerializer
+from .models import Course, Lesson, LessonCompletion
+from .serializers import (
+    CourseSerializer,
+    LessonCompletionSerializer,
+    LessonSerializer,
+)
 from .slugs import unique_slug
 
 
@@ -97,3 +102,45 @@ class LessonViewSet(viewsets.ModelViewSet):
         course = instance.course
         instance.delete()
         course.save()  # bump updated_at
+
+
+class LessonCompletionView(APIView):
+    """Per-user completion toggle for a single lesson.
+
+      POST   /api/courses/{course_pk}/lessons/{slug}/complete/   mark done
+      DELETE /api/courses/{course_pk}/lessons/{slug}/complete/   unmark
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_lesson(self, course_pk, slug):
+        return get_object_or_404(Lesson, course_id=course_pk, slug=slug)
+
+    def post(self, request, course_pk, slug):
+        lesson = self.get_lesson(course_pk, slug)
+        completion, created = LessonCompletion.objects.get_or_create(
+            user=request.user, lesson=lesson
+        )
+        return Response(
+            LessonCompletionSerializer(completion).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def delete(self, request, course_pk, slug):
+        lesson = self.get_lesson(course_pk, slug)
+        LessonCompletion.objects.filter(user=request.user, lesson=lesson).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MyCompletionsView(generics.ListAPIView):
+    """Every lesson the current user has completed, as {course, lesson,
+    completed_at}. The client builds its completion map from this."""
+
+    serializer_class = LessonCompletionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        return LessonCompletion.objects.filter(
+            user=self.request.user
+        ).select_related('lesson')

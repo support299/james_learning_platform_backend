@@ -1,7 +1,12 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from .views import CourseViewSet, LessonViewSet
+from .views import (
+    CourseViewSet,
+    LessonCompletionView,
+    LessonViewSet,
+    MyCompletionsView,
+)
 
 router = DefaultRouter()
 router.register('courses', CourseViewSet, basename='course')
@@ -24,4 +29,10 @@ urlpatterns = router.urls + [
         lesson_detail,
         name='course-lesson-detail',
     ),
+    path(
+        'courses/<slug:course_pk>/lessons/<slug:slug>/complete/',
+        LessonCompletionView.as_view(),
+        name='lesson-complete',
+    ),
+    path('me/completions/', MyCompletionsView.as_view(), name='my-completions'),
 ]

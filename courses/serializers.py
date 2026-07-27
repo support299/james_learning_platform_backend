@@ -1,7 +1,7 @@
 from django.db import transaction
 from rest_framework import serializers
 
-from .models import Course, Lesson, Question, QuestionOption
+from .models import Course, Lesson, LessonCompletion, Question, QuestionOption
 
 
 class QuestionSerializer(serializers.Serializer):
@@ -120,3 +120,12 @@ class CourseSerializer(serializers.ModelSerializer):
         if self.instance is not None:
             fields['id'].read_only = True
         return fields
+
+
+class LessonCompletionSerializer(serializers.ModelSerializer):
+    course = serializers.CharField(source='lesson.course_id', read_only=True)
+    lesson = serializers.CharField(source='lesson.slug', read_only=True)
+
+    class Meta:
+        model = LessonCompletion
+        fields = ['course', 'lesson', 'completed_at']

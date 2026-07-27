@@ -38,7 +38,9 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework_simplejwt',
     'corsheaders',
+    'accounts',
     'courses',
 ]
 
@@ -64,6 +66,18 @@ REST_FRAMEWORK = {
         'rest_framework.pagination.PageNumberPagination'
     ),
     'PAGE_SIZE': 50,
+    # JWT is the default auth; endpoints stay open unless they set
+    # permission_classes = [IsAuthenticated] (e.g. lesson completion).
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+}
+
+from datetime import timedelta  # noqa: E402
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=2),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
 ROOT_URLCONF = 'config.urls'

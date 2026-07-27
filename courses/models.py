@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -97,3 +98,24 @@ class QuestionOption(models.Model):
 
     def __str__(self):
         return self.text
+
+
+class LessonCompletion(models.Model):
+    """Records that a specific user has completed a specific lesson.
+    Completion is per-user, so one row exists per (user, lesson) pair."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='completions',
+        on_delete=models.CASCADE,
+    )
+    lesson = models.ForeignKey(
+        Lesson, related_name='completions', on_delete=models.CASCADE
+    )
+    completed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'lesson')
+
+    def __str__(self):
+        return f'{self.user} ✓ {self.lesson_id}'

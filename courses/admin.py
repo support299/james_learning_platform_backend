@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Course, Lesson, Question, QuestionOption
+from .models import Course, Lesson, LessonCompletion, Question, QuestionOption
 
 
 class LessonInline(admin.TabularInline):
@@ -36,3 +36,9 @@ class LessonAdmin(admin.ModelAdmin):
 class QuestionAdmin(admin.ModelAdmin):
     list_display = ('prompt', 'lesson', 'order')
     inlines = [QuestionOptionInline]
+
+
+@admin.register(LessonCompletion)
+class LessonCompletionAdmin(admin.ModelAdmin):
+    list_display = ('user', 'lesson', 'completed_at')
+    list_filter = ('user',)
