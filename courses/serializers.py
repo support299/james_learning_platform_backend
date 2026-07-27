@@ -1,7 +1,14 @@
 from django.db import transaction
 from rest_framework import serializers
 
-from .models import Course, Lesson, LessonCompletion, Question, QuestionOption
+from .models import (
+    Course,
+    Enrollment,
+    Lesson,
+    LessonCompletion,
+    Question,
+    QuestionOption,
+)
 
 
 class QuestionSerializer(serializers.Serializer):
@@ -129,3 +136,32 @@ class LessonCompletionSerializer(serializers.ModelSerializer):
     class Meta:
         model = LessonCompletion
         fields = ['course', 'lesson', 'completed_at']
+
+
+class EnrollmentSerializer(serializers.ModelSerializer):
+    """One course assigned to a student, with its audit trail."""
+
+    course = serializers.CharField(source='course_id', read_only=True)
+    title = serializers.CharField(source='course.title', read_only=True)
+    assigned_by = serializers.CharField(
+        source='assigned_by.username', read_only=True, default=None
+    )
+
+    class Meta:
+        model = Enrollment
+        fields = ['course', 'title', 'assigned_at', 'assigned_by']
+
+
+class CourseAssignmentSerializer(serializers.Serializer):
+    """The full set of courses a student should be enrolled in, as slug ids:
+    {"courses": ["design-systems-101", …]}. Anything missing from the list is
+    unassigned, so one request describes the end state."""
+
+    courses = serializers.ListField(
+        child=serializers.PrimaryKeyRelatedField(queryset=Course.objects.all()),
+        allow_empty=True,
+    )
+
+    def validate_courses(self, value):
+        # Ticking the same course twice is harmless, not an error.
+        return list(dict.fromkeys(course.pk for course in value))

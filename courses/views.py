@@ -14,8 +14,29 @@ from .serializers import (
 from .slugs import unique_slug
 
 
+class IsStaffOrReadOnly(permissions.BasePermission):
+    """Any signed-in user may read the catalog; only staff may change it."""
+
+    def has_permission(self, request, view):
+        if not (request.user and request.user.is_authenticated):
+            return False
+        return request.method in permissions.SAFE_METHODS or request.user.is_staff
+
+
+def visible_courses(user):
+    """The courses `user` is allowed to see: everything for staff, and just
+    their assigned courses for a student."""
+    queryset = Course.objects.all()
+    if not user.is_staff:
+        queryset = queryset.filter(enrollments__user=user)
+    return queryset
+
+
 class CourseViewSet(viewsets.ModelViewSet):
     """CRUD for courses, plus a `reorder` action for their lessons.
+
+    Students see only the courses assigned to them; staff see the whole
+    catalog and are the only ones who can change it.
 
     Endpoints:
       GET    /api/courses/                list courses
@@ -26,8 +47,11 @@ class CourseViewSet(viewsets.ModelViewSet):
       POST   /api/courses/{id}/reorder/   reorder lessons by id
     """
 
-    queryset = Course.objects.all().prefetch_related('lessons')
     serializer_class = CourseSerializer
+    permission_classes = [IsStaffOrReadOnly]
+
+    def get_queryset(self):
+        return visible_courses(self.request.user).prefetch_related('lessons')
 
     def perform_create(self, serializer):
         # Fill in the slug id from the title when the client didn't supply one.
@@ -72,14 +96,19 @@ class LessonViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = LessonSerializer
+    permission_classes = [IsStaffOrReadOnly]
     lookup_field = 'slug'
     lookup_url_kwarg = 'slug'
 
     def get_course(self):
-        return get_object_or_404(Course, pk=self.kwargs['course_pk'])
+        # 404 rather than 403 for a course the student isn't assigned: an
+        # unassigned course shouldn't be distinguishable from a missing one.
+        return get_object_or_404(
+            visible_courses(self.request.user), pk=self.kwargs['course_pk']
+        )
 
     def get_queryset(self):
-        return Lesson.objects.filter(course_id=self.kwargs['course_pk'])
+        return Lesson.objects.filter(course=self.get_course())
 
     def perform_create(self, serializer):
         course = self.get_course()
@@ -114,7 +143,10 @@ class LessonCompletionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_lesson(self, course_pk, slug):
-        return get_object_or_404(Lesson, course_id=course_pk, slug=slug)
+        course = get_object_or_404(
+            visible_courses(self.request.user), pk=course_pk
+        )
+        return get_object_or_404(Lesson, course=course, slug=slug)
 
     def post(self, request, course_pk, slug):
         lesson = self.get_lesson(course_pk, slug)

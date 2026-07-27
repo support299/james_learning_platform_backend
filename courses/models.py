@@ -100,6 +100,37 @@ class QuestionOption(models.Model):
         return self.text
 
 
+class Enrollment(models.Model):
+    """Grants one user access to one course. Staff assign these from the admin
+    area; a non-staff user only sees the courses they're enrolled in."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='enrollments',
+        on_delete=models.CASCADE,
+    )
+    course = models.ForeignKey(
+        Course, related_name='enrollments', on_delete=models.CASCADE
+    )
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    # Who granted it. SET_NULL so removing an admin account doesn't take the
+    # students' enrollments with it.
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='assigned_enrollments',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        unique_together = ('user', 'course')
+        ordering = ['-assigned_at']
+
+    def __str__(self):
+        return f'{self.user} → {self.course_id}'
+
+
 class LessonCompletion(models.Model):
     """Records that a specific user has completed a specific lesson.
     Completion is per-user, so one row exists per (user, lesson) pair."""

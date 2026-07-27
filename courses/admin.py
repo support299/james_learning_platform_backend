@@ -1,6 +1,13 @@
 from django.contrib import admin
 
-from .models import Course, Lesson, LessonCompletion, Question, QuestionOption
+from .models import (
+    Course,
+    Enrollment,
+    Lesson,
+    LessonCompletion,
+    Question,
+    QuestionOption,
+)
 
 
 class LessonInline(admin.TabularInline):
@@ -42,3 +49,10 @@ class QuestionAdmin(admin.ModelAdmin):
 class LessonCompletionAdmin(admin.ModelAdmin):
     list_display = ('user', 'lesson', 'completed_at')
     list_filter = ('user',)
+
+
+@admin.register(Enrollment)
+class EnrollmentAdmin(admin.ModelAdmin):
+    list_display = ('user', 'course', 'assigned_at', 'assigned_by')
+    list_filter = ('course',)
+    search_fields = ('user__username', 'course__id', 'course__title')
