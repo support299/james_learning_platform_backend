@@ -6,6 +6,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from courses.models import Enrollment
 from courses.serializers import (
@@ -13,7 +14,12 @@ from courses.serializers import (
     EnrollmentSerializer,
 )
 
-from .serializers import RegisterSerializer, StudentSerializer, UserSerializer
+from .serializers import (
+    EmailTokenObtainPairSerializer,
+    RegisterSerializer,
+    StudentSerializer,
+    UserSerializer,
+)
 
 User = get_user_model()
 
@@ -21,6 +27,12 @@ User = get_user_model()
 def tokens_for(user):
     refresh = RefreshToken.for_user(user)
     return {'refresh': str(refresh), 'access': str(refresh.access_token)}
+
+
+class LoginView(TokenObtainPairView):
+    """Exchange an email and password for a JWT pair."""
+
+    serializer_class = EmailTokenObtainPairSerializer
 
 
 class RegisterView(generics.CreateAPIView):

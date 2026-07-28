@@ -206,3 +206,63 @@ class StudentApiSmokeTest(APITestCase):
         )
         self.auth(student)
         assert self.client.get('/api/auth/me/').data['is_staff'] is False
+
+
+class EmailLoginTest(APITestCase):
+    def setUp(self):
+        User.objects.create_user(
+            'alex-rivera', 'Alex@Example.com', 'tempPass!2026'
+        )
+
+    def login(self, **body):
+        return self.client.post('/api/auth/login/', body, format='json')
+
+    def test_login_with_email_returns_a_working_token(self):
+        # Matched case-insensitively, as the stored email is mixed-case.
+        res = self.login(email='alex@example.com', password='tempPass!2026')
+        assert res.status_code == 200, res.data
+        assert 'refresh' in res.data
+
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {res.data["access"]}'
+        )
+        me = self.client.get('/api/auth/me/')
+        assert me.status_code == 200, me.data
+        assert me.data['username'] == 'alex-rivera'
+
+    def test_username_is_no_longer_accepted(self):
+        res = self.login(username='alex-rivera', password='tempPass!2026')
+        assert res.status_code == 400, res.data
+
+    def test_bad_credentials(self):
+        assert self.login(
+            email='alex@example.com', password='wrong'
+        ).status_code == 401
+        assert self.login(
+            email='ghost@example.com', password='tempPass!2026'
+        ).status_code == 401
+
+    def test_deactivated_student_cannot_log_in(self):
+        User.objects.filter(email__iexact='alex@example.com').update(
+            is_active=False
+        )
+        assert self.login(
+            email='alex@example.com', password='tempPass!2026'
+        ).status_code == 401
+
+    def test_email_must_be_unique_across_accounts(self):
+        admin = User.objects.create_user(
+            'boss2', 'boss2@example.com', 'sup3r-secret-pw', is_staff=True
+        )
+        self.client.force_authenticate(user=admin)
+        res = self.client.post(
+            '/api/auth/students/',
+            {
+                'username': 'someone-else',
+                'email': 'ALEX@example.com',
+                'password': 'tempPass!2026',
+            },
+            format='json',
+        )
+        assert res.status_code == 400, res.data
+        assert 'email' in res.data, res.data
