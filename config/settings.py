@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 
+from decouple import config
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -25,7 +27,11 @@ SECRET_KEY = 'django-insecure-*wc5qm=w7uf)0%tl80j(4be5%futkf2)%t1q6e#vjo^i+a83*b
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
+
+# Hosts served over HTTPS through a tunnel must be trusted for CSRF too
+# (Django checks the Origin header on POSTs to the admin / session views).
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='').split(',')
 
 
 # Application definition
@@ -42,6 +48,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'accounts',
     'courses',
+    'ghl',
 ]
 
 MIDDLEWARE = [
@@ -80,6 +87,22 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
+BACKEND_BASE_URL = config('BACKEND_BASE_URL', default='http://localhost:8000')
+
+# GoHighLevel OAuth. Credentials come from .env and are never committed.
+# GHL_REDIRECT_URI must match the Redirect URL registered on the app in the
+# GHL marketplace exactly, including the trailing slash.
+GHL_CLIENT_ID = config('GHL_CLIENT_ID', default='')
+GHL_CLIENT_SECRET = config('GHL_CLIENT_SECRET', default='')
+GHL_REDIRECT_URI = config(
+    'GHL_REDIRECT_URI',
+    default=f'{BACKEND_BASE_URL}/api/ghl/oauth/callback/',
+)
+GHL_SCOPES = config('GHL_SCOPES', default='locations.readonly')
+# Where the callback sends the browser once the install completes. Empty
+# means "return JSON instead of redirecting", which is handy in development.
+GHL_OAUTH_SUCCESS_REDIRECT = config('GHL_OAUTH_SUCCESS_REDIRECT', default='')
+
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
@@ -105,8 +128,12 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': config('DB_ENGINE', default='django.db.backends.postgresql'),
+        'NAME': config('DB_NAME'),
+        'USER': config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST': config('DB_HOST', default='localhost'),
+        'PORT': config('DB_PORT', default='5432'),
     }
 }
 

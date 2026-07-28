@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import AccessToken
 
 from courses.models import Course, Enrollment
 
@@ -229,6 +230,19 @@ class EmailLoginTest(APITestCase):
         me = self.client.get('/api/auth/me/')
         assert me.status_code == 200, me.data
         assert me.data['username'] == 'alex-rivera'
+
+    def test_login_reports_admin_alongside_the_tokens(self):
+        res = self.login(email='alex@example.com', password='tempPass!2026')
+        assert res.data['is_admin'] is False, res.data
+
+        User.objects.create_user(
+            'boss', 'boss@example.com', 'sup3r-secret-pw', is_staff=True
+        )
+        res = self.login(email='boss@example.com', password='sup3r-secret-pw')
+        assert res.data['is_admin'] is True, res.data
+        # …and in the token itself, for anything that only holds the token.
+        claims = AccessToken(res.data['access'])
+        assert claims['is_admin'] is True
 
     def test_username_is_no_longer_accepted(self):
         res = self.login(username='alex-rivera', password='tempPass!2026')

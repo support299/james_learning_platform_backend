@@ -30,6 +30,15 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         # email instead, so drop it.
         self.fields.pop(self.username_field, None)
 
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        # Carried in the token so anything holding it knows the role without a
+        # second round trip. It's a convenience for the client, not a
+        # permission — the server still checks is_staff on every request.
+        token['is_admin'] = user.is_staff
+        return token
+
     def validate(self, attrs):
         email = attrs.pop('email', '').strip()
         user = User.objects.filter(email__iexact=email).order_by('pk').first()
@@ -37,7 +46,11 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         # the failure is the same "no active account" either way and the
         # response doesn't reveal which emails are registered.
         attrs[self.username_field] = user.get_username() if user else ''
-        return super().validate(attrs)
+        data = super().validate(attrs)
+        # Alongside the tokens, so the client can style the admin UI on the
+        # login response instead of waiting for /me.
+        data['is_admin'] = self.user.is_staff
+        return data
 
 
 class UserSerializer(serializers.ModelSerializer):

@@ -5,7 +5,6 @@ from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from courses.models import Enrollment
@@ -25,8 +24,14 @@ User = get_user_model()
 
 
 def tokens_for(user):
-    refresh = RefreshToken.for_user(user)
-    return {'refresh': str(refresh), 'access': str(refresh.access_token)}
+    # Goes through the login serializer so tokens minted here carry the same
+    # claims (including is_admin) as ones from /login.
+    refresh = EmailTokenObtainPairSerializer.get_token(user)
+    return {
+        'refresh': str(refresh),
+        'access': str(refresh.access_token),
+        'is_admin': user.is_staff,
+    }
 
 
 class LoginView(TokenObtainPairView):
