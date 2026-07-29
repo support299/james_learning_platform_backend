@@ -18,4 +18,9 @@ urlpatterns = [
         views.UserSearchView.as_view(),
         name='ghl-user-search',
     ),
+    path(
+        'ghl/autologin/',
+        views.AutoLoginView.as_view(),
+        name='ghl-autologin',
+    ),
 ]

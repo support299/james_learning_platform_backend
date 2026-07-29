@@ -14,12 +14,15 @@ from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.views.decorators.http import require_GET
 from rest_framework import status
-from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.serializers import UserSerializer
+from accounts.views import tokens_for
+
 from . import services
-from .models import GhlToken
+from .models import GhlToken, GhlUser
 from .serializers import GhlTokenSerializer
 
 
@@ -187,6 +190,60 @@ class LocationTokenView(APIView):
             )
 
         return Response(GhlTokenSerializer(token).data)
+
+
+class AutoLoginView(APIView):
+    """POST {"logid": "<GHL user id>"} — trade a GHL user id for a session.
+
+    Backs the one-click academy link sent from GoHighLevel, which carries the
+    id as `?logid={{user.id}}`. The id is the same value stored as
+    `GhlUser.ghl_id`, so the linked student is a single lookup away.
+
+    Note this treats the GHL user id as a bearer credential: it is not secret
+    and does not expire, so anyone holding one can sign in as that student.
+    The intended replacement is a random per-user token stored on the GHL side
+    — when that lands, only the lookup below changes.
+    """
+
+    permission_classes = [AllowAny]
+    # Deliberately no authentication: the caller is signed out by definition,
+    # and an expired token left over from a previous session shouldn't 401 the
+    # request that is meant to replace it.
+    authentication_classes = []
+
+    def post(self, request):
+        logid = str(request.data.get('logid') or '').strip()
+        if not logid:
+            return Response(
+                {'detail': 'logid is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ghl_user = (
+            GhlUser.objects.select_related('student')
+            .filter(ghl_id=logid)
+            .first()
+        )
+        # Unknown id and known-but-unlinked are the same answer to the caller:
+        # there is no student to sign in.
+        student = ghl_user.student if ghl_user else None
+        if student is None:
+            return Response(
+                {'detail': 'No student account is linked to that GHL user.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not student.is_active:
+            return Response(
+                {'detail': 'This account has been deactivated.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Same shape as /auth/login/ and /auth/register/, so the client stores
+        # the session exactly as it does after a password login.
+        return Response(
+            {'user': UserSerializer(student).data, **tokens_for(student)}
+        )
 
 
 class UserSearchView(APIView):
