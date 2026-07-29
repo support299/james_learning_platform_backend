@@ -363,10 +363,25 @@ def save_user(payload, student=None):
 
 
 def link_user_to_student(payload, student):
-    """Attach a fetched GHL user to a student, moving the link if the student
-    was pointed at a different GHL user before (the relation is one-to-one, so
-    the stale row has to let go first)."""
+    """Attach a fetched GHL user to a student.
+
+    A GHL user belongs to at most one student, so claiming one that another
+    student already holds is refused here rather than silently stealing it.
+    The reverse move is allowed: a student pointed at a different GHL user has
+    that older row released first, since the relation is one-to-one.
+    """
     ghl_id = str((payload.get('user') or payload).get('id') or '')
+
+    if (
+        GhlUser.objects.filter(ghl_id=ghl_id)
+        .exclude(student=None)
+        .exclude(student=student)
+        .exists()
+    ):
+        raise GhlError(
+            'That GoHighLevel user is already linked to another student'
+        )
+
     GhlUser.objects.filter(student=student).exclude(ghl_id=ghl_id).update(
         student=None
     )

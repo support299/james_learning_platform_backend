@@ -206,7 +206,12 @@ class StudentSerializer(serializers.ModelSerializer):
         if not ghl_user_id:
             GhlUser.objects.filter(student=student).update(student=None)
             return
-        ghl_services.link_user_to_student(self._ghl_payload, student)
+        try:
+            ghl_services.link_user_to_student(self._ghl_payload, student)
+        except ghl_services.GhlError as exc:
+            # validate_ghl_user_id already rejects a taken user; this catches
+            # the same claim made between that check and this write.
+            raise serializers.ValidationError({'ghl_user_id': str(exc)})
 
     @transaction.atomic
     def create(self, validated_data):
