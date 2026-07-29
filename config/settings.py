@@ -173,3 +173,44 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+
+# Celery
+# https://docs.celeryq.dev/en/stable/django/first-steps-with-django.html
+#
+# Broker/backend URLs live in .env so dev (local redis) and prod differ by
+# config only. Everything under the CELERY_ prefix is read by config/celery.py.
+
+CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = config(
+    'CELERY_RESULT_BACKEND', default='redis://localhost:6379/1'
+)
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+# Never use the default 'celery' queue: any other project pointed at the same
+# redis broker also defaults to it, and whichever worker polls first consumes
+# the message — so their tasks get discarded here as "unregistered" and ours
+# get eaten over there. Naming the queue keeps this project's traffic separate
+# even if the broker DB is shared.
+CELERY_TASK_DEFAULT_QUEUE = 'james_tello'
+# Beat and the workers must agree on the timezone or the schedule drifts.
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 300
+CELERY_TASK_SOFT_TIME_LIMIT = 240
+# Without this a worker that starts before redis is up exits instead of
+# waiting for it.
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+CELERY_BEAT_SCHEDULE = {
+    'ghl-refresh-tokens': {
+        'task': 'ghl.refresh_all_tokens',
+        'schedule': timedelta(hours=10),
+        # Drop a run that beat missed while it was down rather than firing it
+        # late in a burst; the next tick (and the on-demand refresh in
+        # get_valid_token) already covers that gap.
+        'options': {'expires': 60 * 60},
+    },
+}

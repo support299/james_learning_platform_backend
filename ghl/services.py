@@ -1,4 +1,4 @@
-"""GoHighLevel OAuth 2.0 client.
+"""GoHighLevel OAuth 2.0 client and REST calls.
 
 Flow (marketplace.gohighlevel.com/docs/ghl/oauth):
   1. Send the user to `/oauth/chooselocation` on the marketplace host.
@@ -8,7 +8,10 @@ Flow (marketplace.gohighlevel.com/docs/ghl/oauth):
   4. An agency (Company) token can be traded for a sub-account token at
      `/oauth/locationToken`, which additionally needs the `Version` header.
 
-Credentials come from settings (i.e. .env). The hosts and API version are
+Everything below the OAuth section calls the v2 REST API with a stored token,
+refreshing it first when it is close to expiry.
+
+Credentials come from settings (i.e. .env). The hosts and API versions are
 fixed by GHL, so they live here as constants.
 """
 
@@ -24,7 +27,7 @@ from .models import GhlToken
 
 GHL_MARKETPLACE_BASE = 'https://marketplace.gohighlevel.com'
 GHL_API_BASE = 'https://services.leadconnectorhq.com'
-GHL_API_VERSION = '2021-07-28'
+GHL_API_VERSION = 'v3'
 
 # This app installs at sub-account level only; the code exchange always asks
 # for a Location-scoped token.
@@ -40,13 +43,22 @@ STATE_MAX_AGE = 600  # 10 minutes to get through the consent screen.
 TIMEOUT = 30
 
 
-class GhlOAuthError(Exception):
-    """A GHL OAuth endpoint returned a non-2xx response."""
+class GhlError(Exception):
+    """A GHL call failed. `status_code` / `payload` mirror the GHL response
+    when there was one, so views can pass the real reason through."""
 
     def __init__(self, message, status_code=None, payload=None):
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload
+
+
+class GhlOAuthError(GhlError):
+    """A GHL OAuth endpoint returned a non-2xx response."""
+
+
+class GhlApiError(GhlError):
+    """A GHL REST endpoint returned a non-2xx response."""
 
 
 def _require_credentials():
@@ -239,3 +251,49 @@ def get_valid_token(location_id=None, company_id=None):
             )
         token = refresh_token(token)
     return token
+
+
+# --- REST API -------------------------------------------------------------
+
+
+def search_users(query=None, location_id=None, company_id=None):
+    """GET /users/search — search the users of a sub-account.
+
+    `companyId` and `locationId` are required by GHL; they default to the ones
+    on the stored install, so callers only pass the search `query`. Returns the
+    decoded GHL body ({"users": [...], "total": n}).
+    """
+    token = get_valid_token(location_id=location_id, company_id=company_id)
+
+    company = company_id or token.company_id
+    location = location_id or token.location_id
+    if not company or not location:
+        raise GhlApiError(
+            'The stored GHL install has no companyId/locationId; pass them '
+            'explicitly or reconnect the app'
+        )
+
+    params = {'companyId': company, 'locationId': location}
+    # Send `query` only when there is one: GHL matches an empty query against
+    # the empty string and returns nothing, while omitting it lists all users.
+    if query:
+        params['query'] = query
+
+    response = requests.get(
+        f'{GHL_API_BASE}/users/search',
+        params=params,
+        headers={
+            'Accept': 'application/json',
+            'Version': GHL_API_VERSION,
+            'Authorization': f'Bearer {token.access_token}',
+        },
+        timeout=TIMEOUT,
+    )
+    payload = _json_or_text(response)
+    if not response.ok:
+        raise GhlApiError(
+            f'GHL user search failed ({response.status_code})',
+            status_code=response.status_code,
+            payload=payload,
+        )
+    return payload

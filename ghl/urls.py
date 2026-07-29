@@ -11,4 +11,11 @@ urlpatterns = [
         name='ghl-location-token',
     ),
     path('tokens/', views.GhlTokenListView.as_view(), name='ghl-tokens'),
+    # Namespaced under ghl/ because "users" at the /api/ root would read as
+    # this platform's own users, which are a different thing entirely.
+    path(
+        'ghl/users/search/',
+        views.UserSearchView.as_view(),
+        name='ghl-user-search',
+    ),
 ]

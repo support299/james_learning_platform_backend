@@ -187,3 +187,35 @@ class LocationTokenView(APIView):
             )
 
         return Response(GhlTokenSerializer(token).data)
+
+
+class UserSearchView(APIView):
+    """GET /api/ghl/users/search/?query=… — search the sub-account's users.
+
+    Authorization is the stored install's token (refreshed on the way out if
+    needed), so the caller never handles a GHL bearer. `location_id` /
+    `company_id` are only needed once more than one install exists; otherwise
+    they come from the stored token.
+    """
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        try:
+            payload = services.search_users(
+                query=request.query_params.get('query'),
+                location_id=request.query_params.get('location_id'),
+                company_id=request.query_params.get('company_id'),
+            )
+        except GhlToken.DoesNotExist:
+            return Response(
+                {'detail': 'GoHighLevel is not connected; install the app first'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except services.GhlError as exc:
+            return Response(
+                {'detail': str(exc), 'ghl_response': exc.payload},
+                status=exc.status_code or status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(payload)
