@@ -1,8 +1,12 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import AccessToken
 
 from courses.models import Course, Enrollment
+from ghl.models import GhlUser
+from ghl.services import GhlApiError
 
 User = get_user_model()
 
@@ -280,3 +284,94 @@ class EmailLoginTest(APITestCase):
         )
         assert res.status_code == 400, res.data
         assert 'email' in res.data, res.data
+
+
+class StudentGhlLinkTest(APITestCase):
+    """Linking a student to a GoHighLevel user at creation time. The GHL
+    lookup is patched out — these cover our side of the exchange, not GHL's."""
+
+    GHL_USER = {
+        'id': 'ocQHyuzHvysMo5N5VsXc',
+        'name': 'Alex Rivera',
+        'firstName': 'Alex',
+        'lastName': 'Rivera',
+        'email': 'alex@ghl.example.com',
+        'phone': '+15551234567',
+        'roles': {
+            'type': 'account',
+            'role': 'admin',
+            'locationIds': ['loc-1'],
+        },
+    }
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            'boss', 'boss@example.com', 'sup3r-secret-pw', is_staff=True
+        )
+        self.client.force_authenticate(user=self.admin)
+
+    def create_student(self, **extra):
+        return self.client.post(
+            '/api/auth/students/',
+            {
+                'username': 'alex-rivera',
+                'email': 'alex@example.com',
+                'password': 'tempPass!2026',
+                **extra,
+            },
+            format='json',
+        )
+
+    def test_creating_with_a_ghl_user_id_mirrors_and_links_the_user(self):
+        with patch(
+            'ghl.services.fetch_user', return_value=self.GHL_USER
+        ) as fetch:
+            res = self.create_student(ghl_user_id=self.GHL_USER['id'])
+
+        assert res.status_code == 201, res.data
+        fetch.assert_called_once_with(self.GHL_USER['id'])
+        assert res.data['ghl_user']['ghl_id'] == self.GHL_USER['id']
+
+        student = User.objects.get(username='alex-rivera')
+        ghl_user = GhlUser.objects.get(ghl_id=self.GHL_USER['id'])
+        assert ghl_user.student_id == student.pk
+        assert student.ghl_user == ghl_user
+        assert ghl_user.name == 'Alex Rivera'
+        assert ghl_user.role == 'admin'
+        assert ghl_user.location_id == 'loc-1'
+
+    def test_the_ghl_user_id_is_optional(self):
+        res = self.create_student()
+        assert res.status_code == 201, res.data
+        assert res.data['ghl_user'] is None
+        assert GhlUser.objects.count() == 0
+
+    def test_an_unknown_ghl_user_id_fails_the_create(self):
+        error = GhlApiError('nope', status_code=404)
+        with patch('ghl.services.fetch_user', side_effect=error):
+            res = self.create_student(ghl_user_id='does-not-exist')
+
+        assert res.status_code == 400, res.data
+        assert 'ghl_user_id' in res.data, res.data
+        # The student must not survive a failed link.
+        assert not User.objects.filter(username='alex-rivera').exists()
+
+    def test_a_ghl_user_cannot_be_linked_to_two_students(self):
+        with patch('ghl.services.fetch_user', return_value=self.GHL_USER):
+            assert self.create_student(
+                ghl_user_id=self.GHL_USER['id']
+            ).status_code == 201
+
+            res = self.client.post(
+                '/api/auth/students/',
+                {
+                    'username': 'someone-else',
+                    'email': 'else@example.com',
+                    'password': 'tempPass!2026',
+                    'ghl_user_id': self.GHL_USER['id'],
+                },
+                format='json',
+            )
+
+        assert res.status_code == 400, res.data
+        assert 'ghl_user_id' in res.data, res.data

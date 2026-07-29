@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import GhlToken
+from .models import GhlToken, GhlUser
 
 
 class GhlTokenSerializer(serializers.ModelSerializer):
@@ -20,6 +20,29 @@ class GhlTokenSerializer(serializers.ModelSerializer):
             'expires_at',
             'is_expired',
             'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+
+class GhlUserSerializer(serializers.ModelSerializer):
+    """A mirrored GHL user. `raw` stays out — it is a debugging aid, not part
+    of the API contract."""
+
+    class Meta:
+        model = GhlUser
+        fields = [
+            'ghl_id',
+            'name',
+            'first_name',
+            'last_name',
+            'email',
+            'phone',
+            'role',
+            'role_type',
+            'location_id',
+            'company_id',
+            'student',
             'updated_at',
         ]
         read_only_fields = fields

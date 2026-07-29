@@ -1,7 +1,12 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.db import transaction
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+from ghl import services as ghl_services
+from ghl.models import GhlToken, GhlUser
+from ghl.serializers import GhlUserSerializer
 
 User = get_user_model()
 
@@ -99,6 +104,14 @@ class StudentSerializer(serializers.ModelSerializer):
         write_only=True, required=False, validators=[validate_password]
     )
 
+    # Optional: the student's GoHighLevel user id. Given one, we look the user
+    # up in GHL, mirror them into `ghl_users` and link the row to this student.
+    # Sending '' clears an existing link. Reads come back as `ghl_user`.
+    ghl_user_id = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    ghl_user = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = [
@@ -111,6 +124,8 @@ class StudentSerializer(serializers.ModelSerializer):
             'date_joined',
             'last_login',
             'password',
+            'ghl_user_id',
+            'ghl_user',
         ]
         read_only_fields = ['date_joined', 'last_login']
         extra_kwargs = {
@@ -132,25 +147,85 @@ class StudentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('This field is required.')
         return value
 
+    def get_ghl_user(self, student):
+        # An unlinked student has no reverse object at all, so this is a
+        # getattr with a default rather than a plain attribute access.
+        ghl_user = getattr(student, 'ghl_user', None)
+        return GhlUserSerializer(ghl_user).data if ghl_user else None
+
+    def validate_ghl_user_id(self, value):
+        value = (value or '').strip()
+        if not value:
+            return ''
+        # One GHL user maps to one student; say so plainly instead of letting
+        # the one-to-one constraint surface as a 500.
+        taken = GhlUser.objects.filter(ghl_id=value).exclude(student=None)
+        if self.instance is not None:
+            taken = taken.exclude(student=self.instance)
+        if taken.exists():
+            raise serializers.ValidationError(
+                'That GoHighLevel user is already linked to another student.'
+            )
+        return value
+
     def validate(self, attrs):
         if self.instance is None and not attrs.get('password'):
             raise serializers.ValidationError(
                 {'password': 'This field is required.'}
             )
+        # Look the GHL user up here, before anything is written: a bad id then
+        # fails the whole request rather than leaving a student with no link.
+        self._ghl_payload = None
+        if attrs.get('ghl_user_id'):
+            self._ghl_payload = self._fetch_ghl_user(attrs['ghl_user_id'])
         return attrs
 
+    def _fetch_ghl_user(self, ghl_user_id):
+        try:
+            return ghl_services.fetch_user(ghl_user_id)
+        except GhlToken.DoesNotExist:
+            raise serializers.ValidationError(
+                {
+                    'ghl_user_id': (
+                        'GoHighLevel is not connected; install the app first.'
+                    )
+                }
+            )
+        except ghl_services.GhlError as exc:
+            detail = (
+                'No GoHighLevel user with that id.'
+                if exc.status_code == 404
+                else f'Could not reach GoHighLevel: {exc}'
+            )
+            raise serializers.ValidationError({'ghl_user_id': detail})
+
+    def _apply_ghl_link(self, student, ghl_user_id):
+        # Absent field → leave any existing link alone; blank → unlink.
+        if ghl_user_id is None:
+            return
+        if not ghl_user_id:
+            GhlUser.objects.filter(student=student).update(student=None)
+            return
+        ghl_services.link_user_to_student(self._ghl_payload, student)
+
+    @transaction.atomic
     def create(self, validated_data):
+        ghl_user_id = validated_data.pop('ghl_user_id', None)
         password = validated_data.pop('password')
         user = User(**validated_data)
         user.set_password(password)
         user.save()
+        self._apply_ghl_link(user, ghl_user_id)
         return user
 
+    @transaction.atomic
     def update(self, instance, validated_data):
+        ghl_user_id = validated_data.pop('ghl_user_id', None)
         password = validated_data.pop('password', None)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         if password:
             instance.set_password(password)
         instance.save()
+        self._apply_ghl_link(instance, ghl_user_id)
         return instance

@@ -84,7 +84,12 @@ class StudentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # Students are the non-staff users; admins are managed elsewhere.
-        queryset = User.objects.filter(is_staff=False).order_by('-date_joined')
+        # `ghl_user` is serialized on every row, so pull it in the same query.
+        queryset = (
+            User.objects.filter(is_staff=False)
+            .select_related('ghl_user')
+            .order_by('-date_joined')
+        )
         search = self.request.query_params.get('search', '').strip()
         if search:
             queryset = queryset.filter(

@@ -23,7 +23,7 @@ from django.conf import settings
 from django.core import signing
 from django.utils import timezone
 
-from .models import GhlToken
+from .models import GhlToken, GhlUser
 
 GHL_MARKETPLACE_BASE = 'https://marketplace.gohighlevel.com'
 GHL_API_BASE = 'https://services.leadconnectorhq.com'
@@ -297,3 +297,77 @@ def search_users(query=None, location_id=None, company_id=None):
             payload=payload,
         )
     return payload
+
+
+def fetch_user(ghl_user_id, location_id=None, company_id=None):
+    """GET /users/{userId} — one sub-account user by their GHL id.
+
+    Raises GhlApiError (404) when GHL doesn't know the id, which is how a
+    mistyped id surfaces to the caller.
+    """
+    token = get_valid_token(location_id=location_id, company_id=company_id)
+
+    response = requests.get(
+        f'{GHL_API_BASE}/users/{ghl_user_id}',
+        headers={
+            'Accept': 'application/json',
+            'Version': GHL_API_VERSION,
+            'Authorization': f'Bearer {token.access_token}',
+        },
+        timeout=TIMEOUT,
+    )
+    payload = _json_or_text(response)
+    if not response.ok:
+        raise GhlApiError(
+            f'GHL user lookup failed ({response.status_code})',
+            status_code=response.status_code,
+            payload=payload,
+        )
+    return payload
+
+
+def save_user(payload, student=None):
+    """Upsert a GHL user response into `ghl_users`, keyed on GHL's user id.
+
+    `student` links the row to a platform account; leaving it None on an
+    existing row keeps whatever link is already there.
+    """
+    # Most /users endpoints return the object bare, but some wrap it.
+    data = payload.get('user') if isinstance(payload.get('user'), dict) else payload
+    ghl_id = data.get('id') or data.get('_id')
+    if not ghl_id:
+        raise GhlApiError('GHL user response carries no id', payload=payload)
+
+    roles = data.get('roles') or {}
+    location_ids = roles.get('locationIds') or data.get('locationIds') or []
+
+    fields = {
+        'name': data.get('name') or '',
+        'first_name': data.get('firstName') or '',
+        'last_name': data.get('lastName') or '',
+        'email': data.get('email') or '',
+        'phone': data.get('phone') or '',
+        'role': roles.get('role') or '',
+        'role_type': roles.get('type') or '',
+        'location_id': location_ids[0] if location_ids else None,
+        'company_id': data.get('companyId') or None,
+        'raw': data,
+    }
+    if student is not None:
+        fields['student'] = student
+
+    ghl_user, _ = GhlUser.objects.update_or_create(
+        ghl_id=str(ghl_id), defaults=fields
+    )
+    return ghl_user
+
+
+def link_user_to_student(payload, student):
+    """Attach a fetched GHL user to a student, moving the link if the student
+    was pointed at a different GHL user before (the relation is one-to-one, so
+    the stale row has to let go first)."""
+    ghl_id = str((payload.get('user') or payload).get('id') or '')
+    GhlUser.objects.filter(student=student).exclude(ghl_id=ghl_id).update(
+        student=None
+    )
+    return save_user(payload, student=student)
