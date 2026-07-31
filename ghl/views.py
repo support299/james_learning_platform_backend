@@ -32,9 +32,17 @@ def connect(request):
 
     `?next=` is where we send the browser once the install lands; it rides
     along inside the signed state so it can't be tampered with.
+
+    `?target=company` asks GHL for an agency-wide (Company) token instead of
+    the default Location one — only honored if the app is actually installed
+    at the agency level; a sub-account install ignores it. Also carried
+    inside the signed state.
     """
+    target = 'Company' if request.GET.get('target') == 'company' else ''
     try:
-        state = services.make_state({'next': request.GET.get('next') or ''})
+        state = services.make_state(
+            {'next': request.GET.get('next') or '', 'target': target}
+        )
         url = services.build_authorize_url(state)
     except services.GhlOAuthError as exc:
         return JsonResponse({'detail': str(exc)}, status=500)
@@ -62,8 +70,9 @@ def callback(request):
             },
             status_code=400,
         )
-
+    print(f"request.GET: {request.GET}")
     code = request.GET.get('code')
+    print(f"code: {code}")
     if not code:
         return _finish(
             request, None, {'detail': 'Missing ?code'}, status_code=400
@@ -71,9 +80,12 @@ def callback(request):
 
     state = request.GET.get('state')
     next_url = ''
+    target = ''
     if state:
         try:
-            next_url = services.read_state(state).get('next') or ''
+            state_data = services.read_state(state)
+            next_url = state_data.get('next') or ''
+            target = state_data.get('target') or ''
         except signing.BadSignature:
             return _finish(
                 request,
@@ -83,7 +95,7 @@ def callback(request):
             )
 
     try:
-        token = services.exchange_code(code)
+        token = services.exchange_code(code, user_type=target or None)
     except services.GhlOAuthError as exc:
         return _finish(
             request,
@@ -247,12 +259,12 @@ class AutoLoginView(APIView):
 
 
 class UserSearchView(APIView):
-    """GET /api/ghl/users/search/?query=… — search the sub-account's users.
+    """GET /api/ghl/users/search/?query=… — search the agency's users.
 
-    Authorization is the stored install's token (refreshed on the way out if
-    needed), so the caller never handles a GHL bearer. `location_id` /
-    `company_id` are only needed once more than one install exists; otherwise
-    they come from the stored token.
+    Authorization is the stored Company (agency) install's token (refreshed
+    on the way out if needed), so the caller never handles a GHL bearer.
+    `company_id` is only needed once more than one Company install exists;
+    otherwise it comes from the stored token.
     """
 
     permission_classes = [IsAdminUser]
@@ -261,7 +273,6 @@ class UserSearchView(APIView):
         try:
             payload = services.search_users(
                 query=request.query_params.get('query'),
-                location_id=request.query_params.get('location_id'),
                 company_id=request.query_params.get('company_id'),
             )
         except GhlToken.DoesNotExist:

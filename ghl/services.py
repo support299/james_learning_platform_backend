@@ -25,7 +25,7 @@ from django.utils import timezone
 
 from .models import GhlToken, GhlUser
 
-GHL_MARKETPLACE_BASE = 'https://marketplace.gohighlevel.com'
+GHL_MARKETPLACE_BASE = 'https://marketplace.gohighlevel.com/v2'
 GHL_API_BASE = 'https://services.leadconnectorhq.com'
 GHL_API_VERSION = 'v3'
 
@@ -123,15 +123,22 @@ def _post_token(data):
     return payload
 
 
-def exchange_code(code, redirect_uri=None):
-    """Trade an authorization code for tokens and persist them."""
+def exchange_code(code, redirect_uri=None, user_type=None):
+    """Trade an authorization code for tokens and persist them.
+
+    `user_type` picks which kind of token the exchange asks for — 'Location'
+    (the default, for a single sub-account) or 'Company' (agency-wide, only
+    granted when the app is installed at the agency level). The app's
+    Distribution Type must be "Sub-account (Both Can Install)" in the GHL
+    marketplace for a Company install to be possible at all.
+    """
     payload = _post_token(
         {
             'client_id': settings.GHL_CLIENT_ID,
             'client_secret': settings.GHL_CLIENT_SECRET,
             'grant_type': 'authorization_code',
             'code': code,
-            'user_type': USER_TYPE,
+            'user_type': user_type or USER_TYPE,
             'redirect_uri': redirect_uri or settings.GHL_REDIRECT_URI,
         }
     )
@@ -231,7 +238,7 @@ def save_token(payload, instance=None):
     return token
 
 
-def get_valid_token(location_id=None, company_id=None):
+def get_valid_token(location_id=None, company_id=None, user_type=None):
     """Return a usable token for the given target, refreshing it if it is
     expired or about to be. Raises GhlToken.DoesNotExist if not installed."""
     queryset = GhlToken.objects.all()
@@ -239,6 +246,8 @@ def get_valid_token(location_id=None, company_id=None):
         queryset = queryset.filter(location_id=location_id)
     if company_id:
         queryset = queryset.filter(company_id=company_id)
+    if user_type:
+        queryset = queryset.filter(user_type=user_type)
 
     token = queryset.first()
     if token is None:
@@ -256,24 +265,25 @@ def get_valid_token(location_id=None, company_id=None):
 # --- REST API -------------------------------------------------------------
 
 
-def search_users(query=None, location_id=None, company_id=None):
-    """GET /users/search — search the users of a sub-account.
+def search_users(query=None, company_id=None):
+    """GET /users/search — search the agency's users.
 
-    `companyId` and `locationId` are required by GHL; they default to the ones
-    on the stored install, so callers only pass the search `query`. Returns the
+    `companyId` is required by GHL; it defaults to the one on the stored
+    Company install, so callers only pass the search `query`. Returns the
     decoded GHL body ({"users": [...], "total": n}).
     """
-    token = get_valid_token(location_id=location_id, company_id=company_id)
-
+    # /users/search requires a Company (agency) token, not a Location one —
+    # look it up by user_type rather than location_id, since there is only
+    # ever one Company token stored.
+    token = get_valid_token(company_id=company_id, user_type=GhlToken.UserType.COMPANY)
     company = company_id or token.company_id
-    location = location_id or token.location_id
-    if not company or not location:
+    if not company:
         raise GhlApiError(
-            'The stored GHL install has no companyId/locationId; pass them '
-            'explicitly or reconnect the app'
+            'The stored GHL install has no companyId; pass it explicitly or '
+            'reconnect the app'
         )
 
-    params = {'companyId': company, 'locationId': location}
+    params = {'companyId': company}
     # Send `query` only when there is one: GHL matches an empty query against
     # the empty string and returns nothing, while omitting it lists all users.
     if query:
