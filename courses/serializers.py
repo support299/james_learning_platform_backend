@@ -8,6 +8,7 @@ from .models import (
     LessonCompletion,
     Question,
     QuestionOption,
+    VideoProgress,
 )
 
 
@@ -136,6 +137,25 @@ class LessonCompletionSerializer(serializers.ModelSerializer):
     class Meta:
         model = LessonCompletion
         fields = ['course', 'lesson', 'completed_at']
+
+
+class VideoProgressSerializer(serializers.ModelSerializer):
+    """One embed's progress for the current user. `provider`/`external_id`
+    identify which embed within the lesson this row is for (a lesson can
+    have several); `duration_seconds` is read off the shared LessonVideo."""
+
+    provider = serializers.CharField(source='video.provider', read_only=True)
+    external_id = serializers.CharField(source='video.external_id', read_only=True)
+    duration_seconds = serializers.FloatField(
+        source='video.duration_seconds', read_only=True
+    )
+
+    class Meta:
+        model = VideoProgress
+        fields = [
+            'provider', 'external_id', 'duration_seconds',
+            'max_watched_seconds', 'focused_time_seconds', 'updated_at',
+        ]
 
 
 class EnrollmentSerializer(serializers.ModelSerializer):

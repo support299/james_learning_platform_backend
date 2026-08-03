@@ -5,8 +5,10 @@ from .models import (
     Enrollment,
     Lesson,
     LessonCompletion,
+    LessonVideo,
     Question,
     QuestionOption,
+    VideoProgress,
 )
 
 
@@ -56,3 +58,16 @@ class EnrollmentAdmin(admin.ModelAdmin):
     list_display = ('user', 'course', 'assigned_at', 'assigned_by')
     list_filter = ('course',)
     search_fields = ('user__username', 'course__id', 'course__title')
+
+
+@admin.register(LessonVideo)
+class LessonVideoAdmin(admin.ModelAdmin):
+    list_display = ('lesson', 'provider', 'external_id', 'duration_seconds')
+    list_filter = ('provider',)
+    search_fields = ('lesson__title', 'external_id')
+
+
+@admin.register(VideoProgress)
+class VideoProgressAdmin(admin.ModelAdmin):
+    list_display = ('user', 'video', 'max_watched_seconds', 'focused_time_seconds', 'updated_at')
+    list_filter = ('user',)

@@ -150,3 +150,62 @@ class LessonCompletion(models.Model):
 
     def __str__(self):
         return f'{self.user} ✓ {self.lesson_id}'
+
+
+class LessonVideo(models.Model):
+    """One distinct video embed found inside a lesson's `html`. A lesson can
+    embed several videos (mixed with text), so each is identified by
+    `provider` + `external_id` (parsed from the embed's iframe src, see
+    `embeds.py`) rather than by position — reordering or editing the
+    surrounding text doesn't break tracking for an already-watched video.
+
+    Lazily get_or_create'd the first time any heartbeat arrives for that
+    embed; `duration_seconds` comes from the player and is never overwritten
+    once set, so it can't be shrunk later to game the watch-ratio checks."""
+
+    class Provider(models.TextChoices):
+        YOUTUBE = 'youtube', 'YouTube'
+        LOOM = 'loom', 'Loom'
+        VIMEO = 'vimeo', 'Vimeo'
+
+    lesson = models.ForeignKey(
+        Lesson, related_name='videos', on_delete=models.CASCADE
+    )
+    provider = models.CharField(max_length=20, choices=Provider.choices)
+    external_id = models.CharField(max_length=64)
+    duration_seconds = models.FloatField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('lesson', 'provider', 'external_id')
+
+    def __str__(self):
+        return f'{self.lesson_id} / {self.provider}:{self.external_id}'
+
+
+class VideoProgress(models.Model):
+    """Tracks how much of one lesson embed a user has actually watched, so
+    the completion button can be gated on real playback rather than a click.
+
+    Two independent signals are kept: `max_watched_seconds` is the furthest
+    content position reached (drives the anti-skip check), and
+    `focused_time_seconds` is real wall-clock time spent tab-focused on the
+    lesson (catches watching at faster-than-1x playback speed, since content
+    position can then outrun real time)."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='video_progress',
+        on_delete=models.CASCADE,
+    )
+    video = models.ForeignKey(
+        LessonVideo, related_name='progress', on_delete=models.CASCADE
+    )
+    max_watched_seconds = models.FloatField(default=0.0)
+    focused_time_seconds = models.FloatField(default=0.0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('user', 'video')
+
+    def __str__(self):
+        return f'{self.user} ⏵ {self.video_id}'

@@ -6,6 +6,7 @@ from .views import (
     LessonCompletionView,
     LessonViewSet,
     MyCompletionsView,
+    VideoProgressView,
 )
 
 router = DefaultRouter()
@@ -33,6 +34,11 @@ urlpatterns = router.urls + [
         'courses/<slug:course_pk>/lessons/<slug:slug>/complete/',
         LessonCompletionView.as_view(),
         name='lesson-complete',
+    ),
+    path(
+        'courses/<slug:course_pk>/lessons/<slug:slug>/video-progress/',
+        VideoProgressView.as_view(),
+        name='video-progress',
     ),
     path('me/completions/', MyCompletionsView.as_view(), name='my-completions'),
 ]

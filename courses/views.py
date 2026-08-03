@@ -5,13 +5,32 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Course, Lesson, LessonCompletion
+from .embeds import extract_lesson_videos
+from .models import Course, Lesson, LessonCompletion, LessonVideo, VideoProgress
 from .serializers import (
     CourseSerializer,
     LessonCompletionSerializer,
     LessonSerializer,
+    VideoProgressSerializer,
 )
 from .slugs import unique_slug
+
+# A student must reach this fraction of the video's duration on both signals
+# (content position watched, and wall-clock time spent tab-focused) before
+# the lesson can be marked complete.
+VIDEO_COMPLETION_THRESHOLD = 0.95
+
+# How far past the previous max_watched_seconds a single heartbeat may jump.
+# Whatever a heartbeat reports is stored as-is as long as it's under this —
+# this is not a copy of the player's tight in-session anti-skip tolerance,
+# it's a coarse server-side backstop against callers that bypass the
+# frontend entirely (or send wildly bogus positions), so it's deliberately
+# loose: only jumps of ~6 minutes or more get rejected.
+MAX_WATCHED_JUMP_TOLERANCE_SECONDS = 360.0
+
+# Per-heartbeat cap on focused_delta_seconds, so a spoofed delta can't
+# inflate focused_time_seconds beyond what a normal ~10s heartbeat allows.
+MAX_FOCUSED_DELTA_SECONDS = 15.0
 
 
 class IsStaffOrReadOnly(permissions.BasePermission):
@@ -150,6 +169,14 @@ class LessonCompletionView(APIView):
 
     def post(self, request, course_pk, slug):
         lesson = self.get_lesson(course_pk, slug)
+        # Keyed off actual embed content, not `lesson_type` — lessons authored
+        # through the editor are always saved as `lesson_type: 'text'`
+        # regardless of content, so `lesson_type == VIDEO` would never match
+        # real data. `_video_completion_blockers` already no-ops ([]) when
+        # the lesson's html has no video embeds.
+        reasons = self._video_completion_blockers(request.user, lesson)
+        if reasons:
+            return Response({'detail': reasons}, status=status.HTTP_400_BAD_REQUEST)
         completion, created = LessonCompletion.objects.get_or_create(
             user=request.user, lesson=lesson
         )
@@ -158,10 +185,161 @@ class LessonCompletionView(APIView):
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
+    @staticmethod
+    def _video_completion_blockers(user, lesson):
+        """Reasons `lesson` can't be marked complete yet, or [] if eligible.
+
+        Every video embed found in the lesson's html must individually clear
+        both thresholds — a lesson can embed more than one video."""
+        embeds = extract_lesson_videos(lesson.html)
+        if not embeds:
+            return []
+
+        progress_by_video = {
+            p.video_id: p
+            for p in VideoProgress.objects.filter(
+                user=user, video__lesson=lesson
+            ).select_related('video')
+        }
+        videos_by_key = {
+            (v.provider, v.external_id): v
+            for v in LessonVideo.objects.filter(lesson=lesson)
+        }
+
+        watched_short = focused_short = False
+        for provider, external_id in embeds:
+            video = videos_by_key.get((provider, external_id))
+            progress = progress_by_video.get(video.id) if video else None
+            duration = video.duration_seconds if video else None
+            watched = progress.max_watched_seconds if progress else 0.0
+            focused = progress.focused_time_seconds if progress else 0.0
+            watched_ratio = (watched / duration) if duration else 0.0
+            focused_ratio = (focused / duration) if duration else 0.0
+            if watched_ratio < VIDEO_COMPLETION_THRESHOLD:
+                watched_short = True
+            if focused_ratio < VIDEO_COMPLETION_THRESHOLD:
+                focused_short = True
+
+        reasons = []
+        if watched_short:
+            reasons.append(
+                'You need to watch at least 95% of every video in this '
+                'lesson before marking it complete.'
+            )
+        if focused_short:
+            reasons.append(
+                'Spend more time actively watching this lesson before '
+                'marking it complete.'
+            )
+        return reasons
+
     def delete(self, request, course_pk, slug):
         lesson = self.get_lesson(course_pk, slug)
         LessonCompletion.objects.filter(user=request.user, lesson=lesson).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class VideoProgressView(APIView):
+    """Per-user watch progress for the video embed(s) in a lesson. A lesson's
+    html can contain more than one video, so progress is reported per embed,
+    identified by `provider` + `external_id` (parsed from the embed's src).
+
+      GET  /api/courses/{course_pk}/lessons/{slug}/video-progress/   progress for every embed
+      POST /api/courses/{course_pk}/lessons/{slug}/video-progress/   heartbeat for one embed
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_lesson(self, course_pk, slug):
+        course = get_object_or_404(
+            visible_courses(self.request.user), pk=course_pk
+        )
+        return get_object_or_404(Lesson, course=course, slug=slug)
+
+    def get(self, request, course_pk, slug):
+        lesson = self.get_lesson(course_pk, slug)
+        embeds = extract_lesson_videos(lesson.html)
+        progress_rows = []
+        for provider, external_id in embeds:
+            video, _ = LessonVideo.objects.get_or_create(
+                lesson=lesson, provider=provider, external_id=external_id
+            )
+            progress, _ = VideoProgress.objects.get_or_create(
+                user=request.user, video=video
+            )
+            progress_rows.append(progress)
+        return Response(VideoProgressSerializer(progress_rows, many=True).data)
+
+    def post(self, request, course_pk, slug):
+        lesson = self.get_lesson(course_pk, slug)
+        provider = request.data.get('provider')
+        external_id = request.data.get('external_id')
+        current_time = request.data.get('current_time')
+        focused_delta = request.data.get('focused_delta_seconds', 0)
+        duration = request.data.get('duration_seconds')
+
+        if current_time is None or not provider or not external_id:
+            return Response(
+                {'detail': 'provider, external_id and current_time are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # The embed must actually belong to this lesson's html — reject
+        # progress reports for a video id that isn't part of the lesson.
+        if (provider, external_id) not in extract_lesson_videos(lesson.html):
+            # The video may have been part of the lesson before an edit
+            # removed it, in which case earlier progress still exists — tell
+            # the client the last saved position so the player can seek back
+            # to it instead of losing the viewer's place silently.
+            last_position = None
+            last_updated = None
+            existing_video = LessonVideo.objects.filter(
+                lesson=lesson, provider=provider, external_id=external_id
+            ).first()
+            if existing_video:
+                progress = VideoProgress.objects.filter(
+                    user=request.user, video=existing_video
+                ).first()
+                if progress:
+                    last_position = progress.max_watched_seconds
+                    last_updated = progress.updated_at
+            return Response(
+                {
+                    'detail': 'This video is not part of this lesson.',
+                    'last_position_seconds': last_position,
+                    'last_updated': last_updated,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        current_time = float(current_time)
+        focused_delta = float(focused_delta or 0)
+
+        video, _ = LessonVideo.objects.get_or_create(
+            lesson=lesson, provider=provider, external_id=external_id
+        )
+        # Set the authoritative duration once, from the player's real value.
+        # Never overwritten after that so it can't be shrunk to game the ratio.
+        if video.duration_seconds is None and duration:
+            video.duration_seconds = float(duration)
+            video.save(update_fields=['duration_seconds'])
+
+        progress, _ = VideoProgress.objects.get_or_create(user=request.user, video=video)
+
+        clamped_time = current_time
+        if video.duration_seconds:
+            clamped_time = min(clamped_time, video.duration_seconds)
+        if clamped_time > progress.max_watched_seconds + MAX_WATCHED_JUMP_TOLERANCE_SECONDS:
+            return Response(
+                {'current_time': 'Reported position jumped too far ahead.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        progress.max_watched_seconds = max(progress.max_watched_seconds, clamped_time)
+        progress.focused_time_seconds += max(
+            0.0, min(focused_delta, MAX_FOCUSED_DELTA_SECONDS)
+        )
+        progress.save(update_fields=['max_watched_seconds', 'focused_time_seconds', 'updated_at'])
+        return Response(VideoProgressSerializer(progress).data)
 
 
 class MyCompletionsView(generics.ListAPIView):
