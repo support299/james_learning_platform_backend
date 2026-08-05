@@ -6,7 +6,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .embeds import extract_lesson_videos
-from .models import Course, Lesson, LessonCompletion, LessonVideo, VideoProgress
+from .models import (
+    Course,
+    Lesson,
+    LessonCompletion,
+    LessonVideo,
+    Question,
+    VideoProgress,
+)
 from .serializers import (
     CourseSerializer,
     LessonCompletionSerializer,
@@ -175,6 +182,7 @@ class LessonCompletionView(APIView):
         # real data. `_video_completion_blockers` already no-ops ([]) when
         # the lesson's html has no video embeds.
         reasons = self._video_completion_blockers(request.user, lesson)
+        reasons += self._quiz_completion_blockers(request, lesson)
         if reasons:
             return Response({'detail': reasons}, status=status.HTTP_400_BAD_REQUEST)
         completion, created = LessonCompletion.objects.get_or_create(
@@ -232,6 +240,42 @@ class LessonCompletionView(APIView):
                 'marking it complete.'
             )
         return reasons
+
+    @staticmethod
+    def _quiz_completion_blockers(request, lesson):
+        """A quiz lesson can't be marked complete until every question has
+        been answered correctly. `request.data['answers']` is expected as
+        {question_id: option_id}, matching the shuffled-but-id-stable shape
+        StudentQuestionSerializer sends the client — grading is done here
+        against the real is_correct flags, never trusting a client-side
+        notion of which answer is right."""
+        if lesson.lesson_type != Lesson.Type.QUIZ:
+            return []
+        questions = list(
+            Question.objects.filter(lesson=lesson).prefetch_related('options')
+        )
+        if not questions:
+            return []
+
+        answers = request.data.get('answers')
+        if not isinstance(answers, dict):
+            answers = {}
+
+        for question in questions:
+            correct_option = next(
+                (o for o in question.options.all() if o.is_correct), None
+            )
+            selected_id = answers.get(str(question.id))
+            if (
+                correct_option is None
+                or selected_id is None
+                or str(selected_id) != str(correct_option.id)
+            ):
+                return [
+                    'Answer every question correctly before marking this '
+                    'lesson complete.'
+                ]
+        return []
 
     def delete(self, request, course_pk, slug):
         lesson = self.get_lesson(course_pk, slug)

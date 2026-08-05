@@ -1,3 +1,5 @@
+import random
+
 from django.db import transaction
 from rest_framework import serializers
 
@@ -41,6 +43,26 @@ class QuestionSerializer(serializers.Serializer):
         return attrs
 
 
+class StudentQuestionSerializer(serializers.Serializer):
+    """The student-facing view of a question: options are shuffled and the
+    correct one is never sent — grading happens server-side (see
+    LessonCompletionView) against the canonical, unshuffled data.
+
+    Both the question and option order are re-randomized on every read, so a
+    student who answers wrong and re-fetches the lesson sees a new order
+    rather than the same one, without needing to persist any attempt state.
+    """
+
+    def to_representation(self, question):
+        options = list(question.options.all())
+        random.shuffle(options)
+        return {
+            'id': question.id,
+            'prompt': question.prompt,
+            'options': [{'id': o.id, 'text': o.text} for o in options],
+        }
+
+
 class LessonSerializer(serializers.ModelSerializer):
     # `id` is the per-course slug; `type` maps onto the model's lesson_type.
     id = serializers.SlugField(source='slug', required=False)
@@ -57,6 +79,19 @@ class LessonSerializer(serializers.ModelSerializer):
             'question_count', 'meta', 'questions',
         ]
         read_only_fields = ['order', 'question_count']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        # Staff use this same endpoint to author quizzes in the editor, so
+        # they still need the real answer key. Everyone else gets the
+        # shuffled, answer-free StudentQuestionSerializer view instead.
+        if instance.lesson_type == Lesson.Type.QUIZ and not (user and user.is_staff):
+            questions = list(instance.questions.prefetch_related('options').all())
+            random.shuffle(questions)
+            data['questions'] = StudentQuestionSerializer(questions, many=True).data
+        return data
 
     def _write_questions(self, lesson, questions):
         """Rebuild the lesson's questions/options wholesale from the payload."""
