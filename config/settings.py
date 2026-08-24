@@ -176,6 +176,12 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# User-uploaded lesson images. Served by Django itself only in DEBUG (see
+# config/urls.py) — a real deployment should front this with the webserver
+# or swap in object storage.
+MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 
 # Celery
 # https://docs.celeryq.dev/en/stable/django/first-steps-with-django.html
