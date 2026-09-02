@@ -59,10 +59,18 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    # Isolated from LMS roles: assistant/recruiter/leadership or null.
+    onboarding_role = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         # `is_staff` tells the client whether to show the admin area.
-        fields = ['id', 'username', 'email', 'is_staff']
+        fields = ['id', 'username', 'email', 'is_staff', 'onboarding_role']
+
+    def get_onboarding_role(self, obj):
+        from onboarding.permissions import onboarding_role
+
+        return onboarding_role(obj)
 
 
 class RegisterSerializer(serializers.ModelSerializer):

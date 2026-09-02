@@ -5,6 +5,7 @@ django-celery-beat==2.9.0
 django-cors-headers==4.9.0
 djangorestframework==3.17.1
 djangorestframework_simplejwt==5.5.1
+google-auth==2.40.3
 psycopg[binary]==3.3.4
 python-decouple==3.8
 PyJWT==2.13.0

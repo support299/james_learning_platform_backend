@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'accounts',
     'courses',
     'ghl',
+    'onboarding',
 ]
 
 MIDDLEWARE = [
@@ -104,6 +105,17 @@ GHL_SCOPES = config('GHL_SCOPES', default='locations.readonly')
 # Where the callback sends the browser once the install completes. Empty
 # means "return JSON instead of redirecting", which is handy in development.
 GHL_OAUTH_SUCCESS_REDIRECT = config('GHL_OAUTH_SUCCESS_REDIRECT', default='')
+
+# Agent Onboarding Tracker → Google Sheets. Leave blank in local/dev until
+# a service account is issued. Missing credentials do not block in-app
+# writes; they fail the sync with an error recorded on SpreadsheetSyncState.
+GOOGLE_SERVICE_ACCOUNT_FILE = config('GOOGLE_SERVICE_ACCOUNT_FILE', default='')
+GOOGLE_SERVICE_ACCOUNT_JSON = config('GOOGLE_SERVICE_ACCOUNT_JSON', default='')
+GOOGLE_SHEETS_SPREADSHEET_ID = config('GOOGLE_SHEETS_SPREADSHEET_ID', default='')
+GOOGLE_SHEETS_TAB_NAME = config('GOOGLE_SHEETS_TAB_NAME', default='Onboarding')
+ONBOARDING_SYNC_ENABLED = config(
+    'ONBOARDING_SYNC_ENABLED', default=True, cast=bool
+)
 
 ROOT_URLCONF = 'config.urls'
 
@@ -220,5 +232,10 @@ CELERY_BEAT_SCHEDULE = {
         # late in a burst; the next tick (and the on-demand refresh in
         # get_valid_token) already covers that gap.
         'options': {'expires': 60 * 60},
+    },
+    'onboarding-sync-dirty': {
+        'task': 'onboarding.sync_dirty_agents',
+        'schedule': timedelta(seconds=60),
+        'options': {'expires': 50},
     },
 }
