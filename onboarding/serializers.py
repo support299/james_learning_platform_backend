@@ -36,7 +36,7 @@ def user_brief(user):
 class CarrierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Carrier
-        fields = ['id', 'name', 'code', 'is_active', 'sort_order']
+        fields = ['id', 'name', 'code', 'line', 'is_active', 'sort_order']
         extra_kwargs = {'code': {'required': False, 'allow_blank': True}}
 
     def validate_code(self, value):
@@ -98,6 +98,7 @@ class RequirementTemplateSerializer(serializers.ModelSerializer):
                 'id': link.id,
                 'carrier': link.carrier_id,
                 'name': link.carrier.name,
+                'line': link.carrier.line,
                 'is_required': link.is_required,
             }
             for link in obj.template_carriers.all()
@@ -223,6 +224,7 @@ class AgentChecklistItemSerializer(serializers.ModelSerializer):
 class AgentCarrierSerializer(serializers.ModelSerializer):
     carrier_name = serializers.CharField(source='carrier.name', read_only=True)
     carrier_code = serializers.CharField(source='carrier.code', read_only=True)
+    carrier_line = serializers.CharField(source='carrier.line', read_only=True)
     owner = serializers.SerializerMethodField()
     completed_by = serializers.SerializerMethodField()
     owner_id = serializers.PrimaryKeyRelatedField(
@@ -240,6 +242,7 @@ class AgentCarrierSerializer(serializers.ModelSerializer):
             'carrier',
             'carrier_name',
             'carrier_code',
+            'carrier_line',
             'status',
             'is_required',
             'owner',

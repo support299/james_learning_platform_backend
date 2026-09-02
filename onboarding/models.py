@@ -29,18 +29,23 @@ class RequirementTemplate(models.Model):
 class Carrier(models.Model):
     """Configurable carrier catalog. Never hard-code the live list in the UI."""
 
+    class Line(models.TextChoices):
+        HEALTH = 'health', 'Health'
+        LIFE = 'life', 'Life'
+
     name = models.CharField(max_length=200)
     code = models.SlugField(max_length=80, unique=True)
+    line = models.CharField(max_length=20, choices=Line.choices, default=Line.LIFE)
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['sort_order', 'name']
+        ordering = ['line', 'sort_order', 'name']
 
     def __str__(self):
-        return self.name
+        return f'{self.get_line_display()} / {self.name}'
 
 
 class ChecklistItemDefinition(models.Model):

@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
@@ -263,6 +264,11 @@ class OnboardingApiTest(APITestCase):
         detail = self.client.get(f"/api/onboarding/agents/{data['id']}/")
         assert detail.data['status'] == STATUS_OVERDUE
 
+    @override_settings(
+        GOOGLE_SERVICE_ACCOUNT_FILE='',
+        GOOGLE_SERVICE_ACCOUNT_JSON='',
+        GOOGLE_SHEETS_SPREADSHEET_ID='',
+    )
     def test_sync_not_configured(self):
         self.auth(self.assistant)
         res = self.client.post('/api/onboarding/sync/')
@@ -273,6 +279,78 @@ class OnboardingApiTest(APITestCase):
         status = self.client.get('/api/onboarding/sync/')
         assert status.status_code == 200
         assert status.data['configured'] is False
+
+    def test_delete_catalog_items(self):
+        unused = Carrier.objects.create(name='Spare Co', code='spare-co')
+        self.auth(self.assistant)
+        res = self.client.delete(f'/api/onboarding/carriers/{unused.id}/')
+        assert res.status_code == 204
+        assert not Carrier.objects.filter(id=unused.id).exists()
+
+        data, _ = self._create_agent()
+        in_use = Carrier.objects.get(id=data['carriers'][0]['carrier'])
+        blocked = self.client.delete(f'/api/onboarding/carriers/{in_use.id}/')
+        assert blocked.status_code == 400
+        assert 'still have this carrier' in blocked.data['detail']
+        assert Carrier.objects.filter(id=in_use.id).exists()
+
+        def_id = self.item_def_2.id
+        gone = self.client.delete(f'/api/onboarding/checklist-definitions/{def_id}/')
+        assert gone.status_code == 204
+        assert not ChecklistItemDefinition.objects.filter(id=def_id).exists()
+
+        self.auth(self.recruiter)
+        leftover = Carrier.objects.create(name='No Touch', code='no-touch')
+        assert (
+            self.client.delete(f'/api/onboarding/carriers/{leftover.id}/').status_code
+            == 403
+        )
+
+    def test_edit_and_delete_agent(self):
+        data, _ = self._create_agent()
+        agent_id = data['id']
+        self.auth(self.assistant)
+        patched = self.client.patch(
+            f'/api/onboarding/agents/{agent_id}/',
+            {'full_name': 'Jane Updated'},
+            format='json',
+        )
+        assert patched.status_code == 200, patched.data
+        assert patched.data['full_name'] == 'Jane Updated'
+
+        self.auth(self.recruiter)
+        assert (
+            self.client.delete(f'/api/onboarding/agents/{agent_id}/').status_code
+            == 403
+        )
+
+        self.auth(self.assistant)
+        gone = self.client.delete(f'/api/onboarding/agents/{agent_id}/')
+        assert gone.status_code == 204
+        assert self.client.get(f'/api/onboarding/agents/{agent_id}/').status_code == 404
+
+    def test_edit_and_delete_cohort(self):
+        data, cohort = self._create_agent()
+        self.auth(self.assistant)
+        patched = self.client.patch(
+            f'/api/onboarding/cohorts/{cohort.id}/',
+            {'name': 'Renamed Week'},
+            format='json',
+        )
+        assert patched.status_code == 200, patched.data
+        assert patched.data['name'] == 'Renamed Week'
+
+        self.auth(self.recruiter)
+        assert (
+            self.client.delete(f'/api/onboarding/cohorts/{cohort.id}/').status_code
+            == 403
+        )
+
+        self.auth(self.assistant)
+        gone = self.client.delete(f'/api/onboarding/cohorts/{cohort.id}/')
+        assert gone.status_code == 204
+        assert not Cohort.objects.filter(id=cohort.id).exists()
+        assert not OnboardingAgent.objects.filter(id=data['id']).exists()
 
     def test_lms_still_works(self):
         Course.objects.create(id='demo', title='Demo', description='x')

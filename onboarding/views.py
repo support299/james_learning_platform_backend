@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, ProtectedError
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -52,7 +52,7 @@ User = get_user_model()
 
 class CohortViewSet(viewsets.ModelViewSet):
     serializer_class = CohortSerializer
-    http_method_names = ['get', 'post', 'patch', 'head', 'options']
+    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
 
     def get_queryset(self):
         return Cohort.objects.annotate(agent_count=Count('agents'))
@@ -72,6 +72,22 @@ class CarrierViewSet(viewsets.ModelViewSet):
         if self.request.method in ('GET', 'HEAD', 'OPTIONS'):
             return [HasOnboardingAccess()]
         return [IsOnboardingAssistant()]
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        try:
+            instance.delete()
+        except ProtectedError:
+            return Response(
+                {
+                    'detail': (
+                        f'Cannot delete "{instance.name}" because agents still '
+                        'have this carrier assigned.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ChecklistDefinitionViewSet(viewsets.ModelViewSet):

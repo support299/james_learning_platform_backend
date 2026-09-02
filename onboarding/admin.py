@@ -34,7 +34,8 @@ class RequirementTemplateAdmin(admin.ModelAdmin):
 
 @admin.register(Carrier)
 class CarrierAdmin(admin.ModelAdmin):
-    list_display = ['name', 'code', 'is_active', 'sort_order']
+    list_display = ['name', 'line', 'code', 'is_active', 'sort_order']
+    list_filter = ['line', 'is_active']
     prepopulated_fields = {'code': ('name',)}
 
 

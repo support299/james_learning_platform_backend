@@ -243,7 +243,9 @@ def push_agents(agent_ids=None, force=False):
         spreadsheet_id = _spreadsheet_id()
         tab = _tab_name()
         _ensure_tab(creds, spreadsheet_id, tab)
-        carriers = list(Carrier.objects.filter(is_active=True))
+        carriers = list(
+            Carrier.objects.filter(is_active=True).order_by('line', 'sort_order', 'name')
+        )
         header = _headers_row(carriers)
         existing = _request(
             'GET',
