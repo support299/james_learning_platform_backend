@@ -19,6 +19,16 @@ urlpatterns = [
         name='ghl-user-search',
     ),
     path(
+        'ghl/users/sync/',
+        views.UserSyncView.as_view(),
+        name='ghl-user-sync',
+    ),
+    path(
+        'ghl/webhook/',
+        views.WebhookView.as_view(),
+        name='ghl-webhook',
+    ),
+    path(
         'ghl/autologin/',
         views.AutoLoginView.as_view(),
         name='ghl-autologin',

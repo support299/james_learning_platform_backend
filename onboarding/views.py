@@ -1,9 +1,11 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Count, ProtectedError
+from django.db.models import Count, ProtectedError, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -44,6 +46,8 @@ from .serializers import (
     StaffUserSerializer,
 )
 from .services.assign import assign_requirements
+from .services.person import PersonLinkError, apply_person_link
+from ghl.services import GhlError, link_mirrored_user
 from .services.progress import annotate_agent
 from .services.status import STATUS_AT_RISK, STATUS_ON_TRACK, STATUS_OVERDUE
 
@@ -90,6 +94,34 @@ class CarrierViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class MyOnboardingView(APIView):
+    """The logged-in person's own onboarding case.
+
+    Staff use /agents/:id/. This is what the GHL iframe loads after autologin.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        agent = agent_queryset().filter(user=request.user).first()
+        if agent is None:
+            return Response(
+                {'detail': 'No onboarding case is linked to this account.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        settings = OnboardingSettings.load()
+        extra = annotate_agent(agent, settings)
+        data = OnboardingAgentSerializer(
+            agent,
+            context={'request': request, 'progress': extra, 'settings': settings},
+        ).data
+        staff = User.objects.filter(is_staff=True, is_active=True).order_by(
+            'first_name', 'username'
+        )
+        data['staff'] = StaffUserSerializer(staff, many=True).data
+        return Response(data)
+
+
 class ChecklistDefinitionViewSet(viewsets.ModelViewSet):
     serializer_class = ChecklistItemDefinitionSerializer
     queryset = ChecklistItemDefinition.objects.all()
@@ -134,7 +166,12 @@ class AgentViewSet(viewsets.ModelViewSet):
         if owner:
             qs = qs.filter(owner_id=owner)
         if search:
-            qs = qs.filter(full_name__icontains=search)
+            qs = qs.filter(
+                Q(full_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(user__email__icontains=search)
+                | Q(user__username__icontains=search)
+            )
         return qs
 
     def get_serializer_class(self):
@@ -271,8 +308,11 @@ class AgentViewSet(viewsets.ModelViewSet):
             default_owner = data.get('owner')
             created = []
             for row in data['agents']:
+                ghl_user = row.pop('_ghl_user', None)
+                row.pop('ghl_user_id', None)
                 agent = OnboardingAgent.objects.create(
                     full_name=row['full_name'].strip(),
+                    email=(row.get('email') or '').strip(),
                     cohort=cohort,
                     start_date=row.get('start_date') or cohort.start_date,
                     owner=row.get('owner') or default_owner,
@@ -281,6 +321,19 @@ class AgentViewSet(viewsets.ModelViewSet):
                     agent_type=row.get('agent_type', ''),
                     last_updated_by=request.user,
                 )
+                try:
+                    apply_person_link(agent, email=agent.email)
+                except PersonLinkError as exc:
+                    raise ValidationError(
+                        {'agents': {exc.field: str(exc)}}
+                    ) from exc
+                if ghl_user is not None and agent.user_id:
+                    try:
+                        link_mirrored_user(ghl_user.ghl_id, agent.user)
+                    except GhlError as exc:
+                        raise ValidationError(
+                            {'agents': {'ghl_user_id': str(exc)}}
+                        ) from exc
                 assign_requirements(agent)
                 log_event(
                     request.user,
@@ -296,6 +349,34 @@ class AgentViewSet(viewsets.ModelViewSet):
             {'cohort': CohortSerializer(cohort).data, 'agents': body},
             status=status.HTTP_201_CREATED,
         )
+
+
+class MyOnboardingView(APIView):
+    """The logged-in person's own onboarding case.
+
+    Staff use /agents/:id/. This is what the GHL iframe loads after autologin.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        agent = agent_queryset().filter(user=request.user).first()
+        if agent is None:
+            return Response(
+                {'detail': 'No onboarding case is linked to this account.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        settings = OnboardingSettings.load()
+        extra = annotate_agent(agent, settings)
+        data = OnboardingAgentSerializer(
+            agent,
+            context={'request': request, 'progress': extra, 'settings': settings},
+        ).data
+        staff = User.objects.filter(is_staff=True, is_active=True).order_by(
+            'first_name', 'username'
+        )
+        data['staff'] = StaffUserSerializer(staff, many=True).data
+        return Response(data)
 
 
 class ChecklistItemView(APIView):

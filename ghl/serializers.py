@@ -42,7 +42,7 @@ class GhlUserSerializer(serializers.ModelSerializer):
             'role_type',
             'location_id',
             'company_id',
-            'student',
+            'user',
             'updated_at',
         ]
         read_only_fields = fields

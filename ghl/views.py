@@ -6,6 +6,7 @@ marketplace-initiated install hits the callback with no session at all. The
 JSON endpoints that expose stored tokens are admin-only.
 """
 
+import logging
 from urllib.parse import urlencode
 
 from django.conf import settings
@@ -17,6 +18,8 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+logger = logging.getLogger(__name__)
 
 from accounts.serializers import UserSerializer
 from accounts.views import tokens_for
@@ -70,9 +73,7 @@ def callback(request):
             },
             status_code=400,
         )
-    print(f"request.GET: {request.GET}")
     code = request.GET.get('code')
-    print(f"code: {code}")
     if not code:
         return _finish(
             request, None, {'detail': 'Missing ?code'}, status_code=400
@@ -104,6 +105,12 @@ def callback(request):
             status_code=exc.status_code or 502,
         )
 
+    onboard = {'locations': 0, 'users': 0, 'errors': []}
+    try:
+        onboard = services.onboard_install(token)
+    except Exception:
+        logger.exception('GHL user sync after OAuth failed for %s', token)
+
     return _finish(
         request,
         next_url,
@@ -114,6 +121,8 @@ def callback(request):
             'location_id': token.location_id,
             'company_id': token.company_id,
             'expires_at': token.expires_at.isoformat(),
+            'locations_synced': onboard.get('locations'),
+            'users_synced': onboard.get('users'),
         },
     )
 
@@ -209,10 +218,10 @@ class AutoLoginView(APIView):
 
     Backs the one-click academy link sent from GoHighLevel, which carries the
     id as `?logid={{user.id}}`. The id is the same value stored as
-    `GhlUser.ghl_id`, so the linked student is a single lookup away.
+    `GhlUser.ghl_id`, so the linked account is a single lookup away.
 
     Note this treats the GHL user id as a bearer credential: it is not secret
-    and does not expire, so anyone holding one can sign in as that student.
+    and does not expire, so anyone holding one can sign in as that user.
     The intended replacement is a random per-user token stored on the GHL side
     — when that lands, only the lookup below changes.
     """
@@ -232,20 +241,21 @@ class AutoLoginView(APIView):
             )
 
         ghl_user = (
-            GhlUser.objects.select_related('student')
+            GhlUser.objects.select_related('user')
             .filter(ghl_id=logid)
+            .exclude(user=None)
             .first()
         )
         # Unknown id and known-but-unlinked are the same answer to the caller:
-        # there is no student to sign in.
-        student = ghl_user.student if ghl_user else None
-        if student is None:
+        # there is no account to sign in.
+        account = ghl_user.user if ghl_user else None
+        if account is None:
             return Response(
                 {'detail': 'No student account is linked to that GHL user.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if not student.is_active:
+        if not account.is_active:
             return Response(
                 {'detail': 'This account has been deactivated.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -254,27 +264,66 @@ class AutoLoginView(APIView):
         # Same shape as /auth/login/ and /auth/register/, so the client stores
         # the session exactly as it does after a password login.
         return Response(
-            {'user': UserSerializer(student).data, **tokens_for(student)}
+            {'user': UserSerializer(account).data, **tokens_for(account)}
         )
 
 
 class UserSearchView(APIView):
-    """GET /api/ghl/users/search/?query=… — search the agency's users.
+    """GET /api/ghl/users/search/?query=… — search mirrored GHL users.
 
-    Authorization is the stored Company (agency) install's token (refreshed
-    on the way out if needed), so the caller never handles a GHL bearer.
-    `company_id` is only needed once more than one Company install exists;
-    otherwise it comes from the stored token.
+    The location is pulled into `ghl_users` on OAuth connect (and kept
+    current by the webhook). This endpoint never calls GHL.
     """
 
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        try:
-            payload = services.search_users(
-                query=request.query_params.get('query'),
-                company_id=request.query_params.get('company_id'),
+        if not GhlToken.objects.exists() and not GhlUser.objects.exists():
+            return Response(
+                {'detail': 'GoHighLevel is not connected; install the app first'},
+                status=status.HTTP_404_NOT_FOUND,
             )
+        if GhlToken.objects.exists() and not GhlUser.objects.exists():
+            token = (
+                GhlToken.objects.filter(user_type=GhlToken.UserType.COMPANY).first()
+                or GhlToken.objects.first()
+            )
+            try:
+                services.onboard_install(token)
+            except Exception:
+                logger.exception('GHL user sync on first search failed')
+        return Response(
+            services.search_local_users(query=request.query_params.get('query'))
+        )
+
+
+class UserSyncView(APIView):
+    """POST /api/ghl/users/sync/ — re-pull every user on the location."""
+
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        location_id = None
+        if isinstance(request.data, dict):
+            location_id = request.data.get('location_id') or None
+        try:
+            if location_id:
+                saved = services.sync_location_users(location_id=location_id)
+                result = {
+                    'locations': 1,
+                    'users': len(saved),
+                    'errors': [],
+                }
+            else:
+                token = (
+                    GhlToken.objects.filter(
+                        user_type=GhlToken.UserType.COMPANY
+                    ).first()
+                    or GhlToken.objects.first()
+                )
+                if token is None:
+                    raise GhlToken.DoesNotExist
+                result = services.onboard_install(token)
         except GhlToken.DoesNotExist:
             return Response(
                 {'detail': 'GoHighLevel is not connected; install the app first'},
@@ -285,5 +334,28 @@ class UserSearchView(APIView):
                 {'detail': str(exc), 'ghl_response': exc.payload},
                 status=exc.status_code or status.HTTP_502_BAD_GATEWAY,
             )
+        return Response(
+            {'synced': result.get('users', 0), **result}
+        )
 
-        return Response(payload)
+
+class WebhookView(APIView):
+    """POST /api/ghl/webhook/ — GHL Contact/User create, update, delete.
+
+    Public: GHL posts here with no JWT. Paste this URL into the GHL
+    marketplace app webhooks (ContactCreate/Update/Delete and
+    UserCreate/Update) or a workflow webhook action.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        try:
+            result = services.apply_webhook(request.data)
+        except services.GhlError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(result)

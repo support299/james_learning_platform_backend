@@ -9,10 +9,12 @@ from django.utils import timezone
 class GhlToken(models.Model):
     """One row per GoHighLevel OAuth install.
 
-    `expires_at` is stored as an absolute deadline (computed from the
-    `expires_in` seconds GHL returns) so freshness is a single comparison.
-    `raw` keeps the untouched token response — GHL adds fields over time
-    (userId, planId, approvedLocations…) and we don't want to lose them.
+    Agency (Company) connect stores one company token (location_id empty).
+    Each sub-account then gets its own Location token via /oauth/locationToken.
+    Location tokens have no refresh_token — they are reminted from the company
+    token when they expire.
+
+    `expires_at` is an absolute deadline. `raw` keeps the untouched token body.
     """
 
     class UserType(models.TextChoices):
@@ -54,24 +56,20 @@ class GhlToken(models.Model):
 
 
 class GhlUser(models.Model):
-    """A user of a GHL sub-account, mirrored locally.
+    """A GHL user as seen in one sub-account.
 
-    GHL's own user id is the primary key: it is what an admin pastes into the
-    student form, and keying on it makes re-linking the same user an update
-    rather than a duplicate row.
+    GHL's user id is unique in the agency, but the same person can belong to
+    several locations. We keep one row per (ghl_id, location_id) so listing
+    a location's users does not collapse them. Autologin still keys on ghl_id
+    (`?logid={{user.id}}`).
 
-    `student` is the bridge to this platform's accounts. It lives here because
-    students are plain `auth.User` rows, which can't carry an extra column —
-    and it is a OneToOne so a GHL user maps to at most one student, readable
-    from either side (`student.ghl_user` / `ghl_user.student`). SET_NULL keeps
-    the mirrored GHL record when a student account is deleted.
-
-    `raw` keeps the untouched GHL body; the typed columns below are only the
-    fields we actually display.
+    `user` is the platform login. Several location rows may point at the same
+    account. SET_NULL keeps the GHL mirror if the account is deleted.
     """
 
-    ghl_id = models.CharField(primary_key=True, max_length=64)
-    location_id = models.TextField(null=True, blank=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ghl_id = models.CharField(max_length=64)
+    location_id = models.TextField(blank=True, default='')
     company_id = models.TextField(null=True, blank=True)
     name = models.CharField(max_length=200, blank=True)
     first_name = models.CharField(max_length=150, blank=True)
@@ -81,9 +79,9 @@ class GhlUser(models.Model):
     # roles.role ("admin"/"user") and roles.type ("account"/"agency").
     role = models.CharField(max_length=60, blank=True)
     role_type = models.CharField(max_length=60, blank=True)
-    student = models.OneToOneField(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        related_name='ghl_user',
+        related_name='ghl_users',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -95,10 +93,20 @@ class GhlUser(models.Model):
     class Meta:
         db_table = 'ghl_users'
         ordering = ['name', 'ghl_id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['ghl_id', 'location_id'],
+                name='ghl_users_ghl_id_location_uniq',
+            ),
+        ]
         indexes = [
+            models.Index(fields=['ghl_id']),
             models.Index(fields=['location_id']),
             models.Index(fields=['email']),
         ]
 
     def __str__(self):
-        return self.name or self.email or self.ghl_id
+        label = self.name or self.email or self.ghl_id
+        if self.location_id:
+            return f'{label} ({self.location_id})'
+        return label

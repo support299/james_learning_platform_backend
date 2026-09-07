@@ -119,9 +119,21 @@ class Cohort(models.Model):
 
 
 class OnboardingAgent(models.Model):
-    """A person being onboarded. Not an auth User — agents have no login in V1."""
+    """Onboarding case for one person.
 
+    The person is `user` (same login as the academy student). `owner` is the
+    staff member who manages the case — a different User.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        related_name='onboarding_agent',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
     full_name = models.CharField(max_length=200)
+    email = models.EmailField(blank=True, default='')
     cohort = models.ForeignKey(
         Cohort, related_name='agents', on_delete=models.CASCADE
     )
@@ -155,6 +167,7 @@ class OnboardingAgent(models.Model):
             models.Index(fields=['needs_sync']),
             models.Index(fields=['owner']),
             models.Index(fields=['start_date']),
+            models.Index(fields=['email'], name='onboarding__email_8a3c1e_idx'),
         ]
 
     def __str__(self):

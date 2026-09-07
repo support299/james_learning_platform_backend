@@ -44,6 +44,16 @@ def recruiter_can_edit_item(user, agent, item):
     return item.owner_id == user.id or recruiter_owns_agent(user, agent)
 
 
+def is_onboarding_person(user, agent):
+    """True when this login is the person on the case, not staff managing it."""
+    return bool(
+        user
+        and getattr(user, 'is_authenticated', False)
+        and agent is not None
+        and agent.user_id == user.id
+    )
+
+
 class HasOnboardingAccess(BasePermission):
     """Any onboarding group (or superuser). Students and ungrouped staff: 403."""
 
@@ -57,25 +67,33 @@ class IsOnboardingAssistant(BasePermission):
 
 
 class OnboardingWritePermission(BasePermission):
-    """GET: any onboarding role. Unsafe: assistant, or recruiter (object checks)."""
+    """GET: any onboarding role. Unsafe: assistant, recruiter, or the agent."""
 
     def has_permission(self, request, view):
         role = onboarding_role(request.user)
-        if role is None:
+        if role is not None:
+            if request.method in ('GET', 'HEAD', 'OPTIONS'):
+                return True
+            return role in (ROLE_ASSISTANT, ROLE_RECRUITER)
+        if not getattr(request.user, 'is_authenticated', False):
             return False
-        if request.method in ('GET', 'HEAD', 'OPTIONS'):
-            return True
-        return role in (ROLE_ASSISTANT, ROLE_RECRUITER)
+        if request.user.is_staff:
+            return False
+        from .models import OnboardingAgent
+
+        return OnboardingAgent.objects.filter(user=request.user).exists()
 
     def has_object_permission(self, request, view, obj):
         role = onboarding_role(request.user)
         if role == ROLE_ASSISTANT:
             return True
+        agent = getattr(obj, 'agent', obj)
+        if is_onboarding_person(request.user, agent):
+            return True
         if request.method in ('GET', 'HEAD', 'OPTIONS'):
             return role is not None
         if role != ROLE_RECRUITER:
             return False
-        agent = getattr(obj, 'agent', obj)
         item_owner = getattr(obj, 'owner_id', None)
         if item_owner is not None and obj is not agent:
             return recruiter_can_edit_item(request.user, agent, obj)

@@ -34,7 +34,7 @@ User = get_user_model()
 
 class OnboardingApiTest(APITestCase):
     def setUp(self):
-        self.patcher = patch('onboarding.tasks.sync_agent.delay')
+        self.patcher = patch('onboarding.tasks.sync_agent.apply_async')
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
 
@@ -361,3 +361,234 @@ class OnboardingApiTest(APITestCase):
         res = self.client.get('/api/auth/students/')
         assert res.status_code == 200
         assert self.client.get('/api/auth/me/').data['is_staff'] is True
+
+    def test_agent_without_email_has_no_login(self):
+        data, _ = self._create_agent()
+        assert data['email'] == ''
+        assert data['user'] is None
+        agent = OnboardingAgent.objects.get(pk=data['id'])
+        assert agent.user_id is None
+
+    def test_agent_email_provisions_a_student_login(self):
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week Mail', start_date=date(2026, 8, 25))
+        res = self.client.post(
+            '/api/onboarding/agents/',
+            {
+                'full_name': 'Jane Doe',
+                'email': 'jane.doe@example.com',
+                'cohort': cohort.id,
+            },
+            format='json',
+        )
+        assert res.status_code == 201, res.data
+        assert res.data['email'] == 'jane.doe@example.com'
+        assert res.data['user']['email'] == 'jane.doe@example.com'
+        user = User.objects.get(email='jane.doe@example.com')
+        assert user.is_staff is False
+        assert user.has_usable_password() is False
+        agent = OnboardingAgent.objects.get(pk=res.data['id'])
+        assert agent.user_id == user.id
+        assert user.onboarding_agent.id == agent.id
+
+        listed = self.client.get('/api/auth/students/')
+        assert listed.status_code == 200
+        row = next(r for r in listed.data['results'] if r['id'] == user.id)
+        assert row['onboarding_agent']['id'] == agent.id
+
+    def test_agent_email_links_an_existing_student(self):
+        pupil = self.student
+        data, _ = self._create_agent()
+        self.auth(self.assistant)
+        res = self.client.patch(
+            f"/api/onboarding/agents/{data['id']}/",
+            {'email': pupil.email},
+            format='json',
+        )
+        assert res.status_code == 200, res.data
+        assert res.data['user']['id'] == pupil.id
+        agent = OnboardingAgent.objects.get(pk=data['id'])
+        assert agent.user_id == pupil.id
+
+    def test_staff_email_cannot_be_the_agent(self):
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week Staff', start_date=date(2026, 8, 25))
+        res = self.client.post(
+            '/api/onboarding/agents/',
+            {
+                'full_name': 'Assist Clone',
+                'email': self.assistant.email,
+                'cohort': cohort.id,
+            },
+            format='json',
+        )
+        assert res.status_code == 400, res.data
+        assert 'email' in res.data
+
+    def test_one_onboarding_case_per_user(self):
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week One', start_date=date(2026, 8, 25))
+        first = self.client.post(
+            '/api/onboarding/agents/',
+            {
+                'full_name': 'Jane Doe',
+                'email': 'once@example.com',
+                'cohort': cohort.id,
+            },
+            format='json',
+        )
+        assert first.status_code == 201, first.data
+        second = self.client.post(
+            '/api/onboarding/agents/',
+            {
+                'full_name': 'Jane Again',
+                'email': 'once@example.com',
+                'cohort': cohort.id,
+            },
+            format='json',
+        )
+        assert second.status_code == 400, second.data
+
+    def test_bulk_agents_with_email_provision(self):
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week Bulk', start_date=date(2026, 8, 25))
+        res = self.client.post(
+            '/api/onboarding/agents/bulk/',
+            {
+                'cohort': cohort.id,
+                'agents': [
+                    {'full_name': 'Alex One', 'email': 'alex.one@example.com'},
+                    {'full_name': 'Alex Two'},
+                ],
+            },
+            format='json',
+        )
+        assert res.status_code == 201, res.data
+        assert res.data['agents'][0]['user']['email'] == 'alex.one@example.com'
+        untitled = [a for a in res.data['agents'] if a['full_name'] == 'Alex Two'][0]
+        assert untitled['user'] is None
+
+    def test_bulk_agents_from_synced_ghl_users(self):
+        from ghl.models import GhlUser
+
+        self.auth(self.assistant)
+        GhlUser.objects.create(
+            ghl_id='ghl-alex',
+            name='Alex Ghl',
+            first_name='Alex',
+            last_name='Ghl',
+            email='alex.ghl@example.com',
+        )
+        res = self.client.post(
+            '/api/onboarding/agents/bulk/',
+            {
+                'cohort_name': 'Week Ghl Pick',
+                'start_date': '2026-08-25',
+                'agents': [{'ghl_user_id': 'ghl-alex'}],
+            },
+            format='json',
+        )
+        assert res.status_code == 201, res.data
+        agent = res.data['agents'][0]
+        assert agent['full_name'] == 'Alex Ghl'
+        assert agent['user']['email'] == 'alex.ghl@example.com'
+        linked = GhlUser.objects.get(ghl_id='ghl-alex')
+        assert linked.user_id == agent['user']['id']
+
+    def test_create_agent_from_synced_ghl_user(self):
+        from ghl.models import GhlUser
+
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week Pick', start_date=date(2026, 8, 25))
+        GhlUser.objects.create(
+            ghl_id='ghl-jane',
+            name='Jane Ghl',
+            email='jane.pick@example.com',
+        )
+        res = self.client.post(
+            '/api/onboarding/agents/',
+            {'cohort': cohort.id, 'ghl_user_id': 'ghl-jane'},
+            format='json',
+        )
+        assert res.status_code == 201, res.data
+        assert res.data['full_name'] == 'Jane Ghl'
+        assert User.objects.get(email='jane.pick@example.com').id == (
+            res.data['user']['id']
+        )
+
+    def test_search_agents_by_email(self):
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week Find', start_date=date(2026, 8, 25))
+        self.client.post(
+            '/api/onboarding/agents/',
+            {
+                'full_name': 'Find Me',
+                'email': 'find.me@example.com',
+                'cohort': cohort.id,
+            },
+            format='json',
+        )
+        hit = self.client.get('/api/onboarding/agents/?search=find.me')
+        assert hit.status_code == 200
+        assert hit.data['count'] == 1
+        miss = self.client.get('/api/onboarding/agents/?search=nobody-here')
+        assert miss.data['count'] == 0
+
+    def test_logged_in_agent_loads_own_case(self):
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week Me', start_date=date(2026, 8, 25))
+        created = self.client.post(
+            '/api/onboarding/agents/',
+            {
+                'full_name': 'Jane Doe',
+                'email': 'jane.me@example.com',
+                'cohort': cohort.id,
+            },
+            format='json',
+        )
+        assert created.status_code == 201, created.data
+        jane = User.objects.get(email='jane.me@example.com')
+        self.auth(jane)
+        me = self.client.get('/api/onboarding/me/')
+        assert me.status_code == 200, me.data
+        assert me.data['id'] == created.data['id']
+        assert me.data['full_name'] == 'Jane Doe'
+        assert 'staff' in me.data
+
+        item_id = me.data['checklist'][0]['id']
+        flagged = self.client.patch(
+            f"/api/onboarding/agents/{me.data['id']}/checklist/{item_id}/",
+            {'is_flagged': True},
+            format='json',
+        )
+        assert flagged.status_code == 200, flagged.data
+        assert flagged.data['is_flagged'] is True
+
+        self.auth(self.student)
+        assert self.client.get('/api/onboarding/me/').status_code == 404
+
+    def test_ghl_logid_issues_a_token_for_the_linked_agent(self):
+        from ghl.models import GhlUser
+
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week Ghl', start_date=date(2026, 8, 25))
+        created = self.client.post(
+            '/api/onboarding/agents/',
+            {
+                'full_name': 'Jane Ghl',
+                'email': 'jane.ghl@example.com',
+                'cohort': cohort.id,
+            },
+            format='json',
+        )
+        assert created.status_code == 201, created.data
+        jane = User.objects.get(email='jane.ghl@example.com')
+        GhlUser.objects.create(ghl_id='ghl-jane', user=jane, name='Jane Ghl')
+
+        self.client.force_authenticate(user=None)
+        res = self.client.post(
+            '/api/ghl/autologin/', {'logid': 'ghl-jane'}, format='json'
+        )
+        assert res.status_code == 200, res.data
+        assert res.data['access']
+        assert res.data['user']['id'] == jane.id

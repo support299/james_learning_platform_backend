@@ -16,7 +16,10 @@ from .models import (
     TemplateCarrier,
     TemplateChecklistItem,
 )
+from .services.person import PersonLinkError, apply_person_link
 from .services.progress import annotate_agent
+from ghl.models import GhlUser
+from ghl.services import GhlError, link_mirrored_user
 
 User = get_user_model()
 
@@ -265,6 +268,7 @@ class AgentCarrierSerializer(serializers.ModelSerializer):
 class OnboardingAgentSerializer(serializers.ModelSerializer):
     owner = serializers.SerializerMethodField()
     last_updated_by = serializers.SerializerMethodField()
+    user = serializers.SerializerMethodField()
     cohort_name = serializers.CharField(source='cohort.name', read_only=True)
     cohort_start_date = serializers.DateField(
         source='cohort.start_date', read_only=True
@@ -275,6 +279,16 @@ class OnboardingAgentSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
         write_only=True,
+    )
+    user_id = serializers.PrimaryKeyRelatedField(
+        source='user',
+        queryset=User.objects.filter(is_staff=False),
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
+    ghl_user_id = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
     )
     start_date = serializers.DateField(required=False)
     completion_percent = serializers.IntegerField(read_only=True)
@@ -292,6 +306,10 @@ class OnboardingAgentSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'full_name',
+            'email',
+            'user',
+            'user_id',
+            'ghl_user_id',
             'cohort',
             'cohort_name',
             'cohort_start_date',
@@ -311,6 +329,9 @@ class OnboardingAgentSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
+        extra_kwargs = {
+            'full_name': {'required': False, 'allow_blank': True},
+        }
 
     def get_owner(self, obj):
         return user_brief(obj.owner)
@@ -318,10 +339,89 @@ class OnboardingAgentSerializer(serializers.ModelSerializer):
     def get_last_updated_by(self, obj):
         return user_brief(obj.last_updated_by)
 
+    def get_user(self, obj):
+        return user_brief(obj.user)
+
+    def _resolve_ghl_user(self, ghl_user_id):
+        ghl_user_id = (ghl_user_id or '').strip()
+        if not ghl_user_id:
+            return None
+        ghl_user = GhlUser.objects.filter(ghl_id=ghl_user_id).first()
+        if ghl_user is None:
+            raise serializers.ValidationError(
+                {'ghl_user_id': 'No synced GoHighLevel user with that id.'}
+            )
+        return ghl_user
+
+    def _fill_from_ghl(self, attrs, ghl_user):
+        if not attrs.get('full_name'):
+            attrs['full_name'] = (
+                ghl_user.name
+                or ' '.join(
+                    part
+                    for part in (ghl_user.first_name, ghl_user.last_name)
+                    if part
+                )
+            )
+        if not attrs.get('email') and ghl_user.email:
+            attrs['email'] = ghl_user.email
+        if not attrs.get('full_name'):
+            raise serializers.ValidationError(
+                {'full_name': 'That GoHighLevel user has no name.'}
+            )
+        return attrs
+
+    def _attach_ghl(self, agent, ghl_user):
+        if ghl_user is None or agent.user_id is None:
+            return
+        try:
+            link_mirrored_user(ghl_user.ghl_id, agent.user)
+        except GhlError as exc:
+            raise serializers.ValidationError({'ghl_user_id': str(exc)}) from exc
+
+    def _link_person(self, agent, *, user=None, user_in_payload=False):
+        try:
+            return apply_person_link(
+                agent,
+                email=agent.email,
+                user=user,
+                user_in_payload=user_in_payload,
+            )
+        except PersonLinkError as exc:
+            raise serializers.ValidationError({exc.field: str(exc)}) from exc
+
+    def validate(self, attrs):
+        ghl_user = self._resolve_ghl_user(attrs.pop('ghl_user_id', ''))
+        self._ghl_user = ghl_user
+        if ghl_user is not None:
+            attrs = self._fill_from_ghl(attrs, ghl_user)
+        if self.instance is None and not (attrs.get('full_name') or '').strip():
+            raise serializers.ValidationError(
+                {'full_name': 'This field is required.'}
+            )
+        return attrs
+
     def create(self, validated):
         cohort = validated['cohort']
         validated.setdefault('start_date', cohort.start_date)
-        return super().create(validated)
+        user_in_payload = 'user' in validated
+        user = validated.pop('user', None)
+        agent = super().create(validated)
+        agent = self._link_person(
+            agent, user=user, user_in_payload=user_in_payload
+        )
+        self._attach_ghl(agent, getattr(self, '_ghl_user', None))
+        return agent
+
+    def update(self, instance, validated):
+        user_in_payload = 'user' in validated
+        user = validated.pop('user', None)
+        instance = super().update(instance, validated)
+        instance = self._link_person(
+            instance, user=user, user_in_payload=user_in_payload
+        )
+        self._attach_ghl(instance, getattr(self, '_ghl_user', None))
+        return instance
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -340,6 +440,9 @@ class OnboardingAgentListSerializer(OnboardingAgentSerializer):
         fields = [
             'id',
             'full_name',
+            'email',
+            'user',
+            'user_id',
             'cohort',
             'cohort_name',
             'cohort_start_date',
@@ -360,7 +463,11 @@ class OnboardingAgentListSerializer(OnboardingAgentSerializer):
 
 
 class BulkAgentRowSerializer(serializers.Serializer):
-    full_name = serializers.CharField(max_length=200)
+    full_name = serializers.CharField(
+        max_length=200, required=False, allow_blank=True
+    )
+    email = serializers.EmailField(required=False, allow_blank=True)
+    ghl_user_id = serializers.CharField(required=False, allow_blank=True)
     start_date = serializers.DateField(required=False)
     owner_id = serializers.PrimaryKeyRelatedField(
         source='owner',
@@ -371,6 +478,33 @@ class BulkAgentRowSerializer(serializers.Serializer):
     role = serializers.CharField(max_length=80, required=False, allow_blank=True)
     state = serializers.CharField(max_length=80, required=False, allow_blank=True)
     agent_type = serializers.CharField(max_length=80, required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        ghl_id = (attrs.get('ghl_user_id') or '').strip()
+        ghl_user = None
+        if ghl_id:
+            ghl_user = GhlUser.objects.filter(ghl_id=ghl_id).first()
+            if ghl_user is None:
+                raise serializers.ValidationError(
+                    {'ghl_user_id': 'No synced GoHighLevel user with that id.'}
+                )
+            if not attrs.get('full_name'):
+                attrs['full_name'] = (
+                    ghl_user.name
+                    or ' '.join(
+                        part
+                        for part in (ghl_user.first_name, ghl_user.last_name)
+                        if part
+                    )
+                )
+            if not attrs.get('email') and ghl_user.email:
+                attrs['email'] = ghl_user.email
+        if not (attrs.get('full_name') or '').strip():
+            raise serializers.ValidationError(
+                {'full_name': 'Provide a name or a GoHighLevel user.'}
+            )
+        attrs['_ghl_user'] = ghl_user
+        return attrs
 
 
 class BulkAgentSerializer(serializers.Serializer):
