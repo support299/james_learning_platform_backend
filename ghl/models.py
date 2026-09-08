@@ -100,7 +100,7 @@ class GhlUser(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=['ghl_id']),
+            models.Index(fields=['ghl_id'], name='ghl_users_ghl_id_idx'),
             models.Index(fields=['location_id']),
             models.Index(fields=['email']),
         ]
