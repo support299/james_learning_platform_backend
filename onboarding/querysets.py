@@ -5,7 +5,7 @@ from .models import AgentCarrierRequirement, AgentChecklistItem, OnboardingAgent
 
 def agent_queryset():
     return OnboardingAgent.objects.select_related(
-        'cohort', 'owner', 'last_updated_by'
+        'cohort', 'owner', 'last_updated_by', 'user'
     ).prefetch_related(
         Prefetch(
             'checklist_items',

@@ -5,7 +5,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from ghl import services as ghl_services
-from ghl.models import GhlToken, GhlUser
+from ghl.models import GhlUser
 from ghl.serializers import GhlUserSerializer
 
 User = get_user_model()
@@ -112,13 +112,14 @@ class StudentSerializer(serializers.ModelSerializer):
         write_only=True, required=False, validators=[validate_password]
     )
 
-    # Optional: the student's GoHighLevel user id. Given one, we look the user
-    # up in GHL, mirror them into `ghl_users` and link the row to this student.
-    # Sending '' clears an existing link. Reads come back as `ghl_user`.
+    # Optional: the student's GoHighLevel user id. The id must already exist
+    # in `ghl_users` (synced on connect / webhook). Sending '' clears a link.
+    # Reads come back as `ghl_user`.
     ghl_user_id = serializers.CharField(
         write_only=True, required=False, allow_blank=True
     )
     ghl_user = serializers.SerializerMethodField()
+    onboarding_agent = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -134,6 +135,7 @@ class StudentSerializer(serializers.ModelSerializer):
             'password',
             'ghl_user_id',
             'ghl_user',
+            'onboarding_agent',
         ]
         read_only_fields = ['date_joined', 'last_login']
         extra_kwargs = {
@@ -156,20 +158,33 @@ class StudentSerializer(serializers.ModelSerializer):
         return value
 
     def get_ghl_user(self, student):
-        # An unlinked student has no reverse object at all, so this is a
-        # getattr with a default rather than a plain attribute access.
-        ghl_user = getattr(student, 'ghl_user', None)
+        ghl_user = student.ghl_users.order_by('location_id').first()
         return GhlUserSerializer(ghl_user).data if ghl_user else None
+
+    def get_onboarding_agent(self, student):
+        agent = getattr(student, 'onboarding_agent', None)
+        if agent is None:
+            return None
+        return {
+            'id': agent.id,
+            'full_name': agent.full_name,
+            'cohort': agent.cohort_id,
+            'cohort_name': agent.cohort.name if agent.cohort_id else '',
+        }
 
     def validate_ghl_user_id(self, value):
         value = (value or '').strip()
         if not value:
             return ''
-        # One GHL user maps to one student; say so plainly instead of letting
+        if not GhlUser.objects.filter(ghl_id=value).exists():
+            raise serializers.ValidationError(
+                'No synced GoHighLevel user with that id.'
+            )
+        # One GHL user maps to one account; say so plainly instead of letting
         # the one-to-one constraint surface as a 500.
-        taken = GhlUser.objects.filter(ghl_id=value).exclude(student=None)
+        taken = GhlUser.objects.filter(ghl_id=value).exclude(user=None)
         if self.instance is not None:
-            taken = taken.exclude(student=self.instance)
+            taken = taken.exclude(user=self.instance)
         if taken.exists():
             raise serializers.ValidationError(
                 'That GoHighLevel user is already linked to another student.'
@@ -181,44 +196,18 @@ class StudentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {'password': 'This field is required.'}
             )
-        # Look the GHL user up here, before anything is written: a bad id then
-        # fails the whole request rather than leaving a student with no link.
-        self._ghl_payload = None
-        if attrs.get('ghl_user_id'):
-            self._ghl_payload = self._fetch_ghl_user(attrs['ghl_user_id'])
         return attrs
-
-    def _fetch_ghl_user(self, ghl_user_id):
-        try:
-            return ghl_services.fetch_user(ghl_user_id)
-        except GhlToken.DoesNotExist:
-            raise serializers.ValidationError(
-                {
-                    'ghl_user_id': (
-                        'GoHighLevel is not connected; install the app first.'
-                    )
-                }
-            )
-        except ghl_services.GhlError as exc:
-            detail = (
-                'No GoHighLevel user with that id.'
-                if exc.status_code == 404
-                else f'Could not reach GoHighLevel: {exc}'
-            )
-            raise serializers.ValidationError({'ghl_user_id': detail})
 
     def _apply_ghl_link(self, student, ghl_user_id):
         # Absent field → leave any existing link alone; blank → unlink.
         if ghl_user_id is None:
             return
         if not ghl_user_id:
-            GhlUser.objects.filter(student=student).update(student=None)
+            GhlUser.objects.filter(user=student).update(user=None)
             return
         try:
-            ghl_services.link_user_to_student(self._ghl_payload, student)
+            ghl_services.link_mirrored_user(ghl_user_id, student)
         except ghl_services.GhlError as exc:
-            # validate_ghl_user_id already rejects a taken user; this catches
-            # the same claim made between that check and this write.
             raise serializers.ValidationError({'ghl_user_id': str(exc)})
 
     @transaction.atomic

@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
     bind=True,
     max_retries=3,
     default_retry_delay=30,
+    ignore_result=True,
 )
 def sync_agent(self, agent_id):
     from .services.sheets import SheetsError, credentials_configured, push_agents
@@ -32,7 +33,7 @@ def sync_agent(self, agent_id):
     return {'agent_id': agent_id, **result}
 
 
-@shared_task(name='onboarding.sync_dirty_agents')
+@shared_task(name='onboarding.sync_dirty_agents', ignore_result=True)
 def sync_dirty_agents():
     from .models import OnboardingAgent
     from .services.sheets import push_agents

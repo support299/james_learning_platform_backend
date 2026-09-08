@@ -10,6 +10,7 @@ from .views import (
     ChecklistItemView,
     CohortViewSet,
     DashboardView,
+    MyOnboardingView,
     RequirementTemplateViewSet,
     SettingsView,
     StaffListView,
@@ -32,6 +33,7 @@ router.register(
 )
 
 urlpatterns = router.urls + [
+    path('me/', MyOnboardingView.as_view(), name='onboarding-me'),
     path('dashboard/', DashboardView.as_view(), name='onboarding-dashboard'),
     path('audit/', AuditView.as_view(), name='onboarding-audit'),
     path('settings/', SettingsView.as_view(), name='onboarding-settings'),

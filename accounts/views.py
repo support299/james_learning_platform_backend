@@ -87,7 +87,8 @@ class StudentViewSet(viewsets.ModelViewSet):
         # `ghl_user` is serialized on every row, so pull it in the same query.
         queryset = (
             User.objects.filter(is_staff=False)
-            .select_related('ghl_user')
+            .prefetch_related('ghl_users')
+            .select_related('onboarding_agent', 'onboarding_agent__cohort')
             .order_by('-date_joined')
         )
         search = self.request.query_params.get('search', '').strip()

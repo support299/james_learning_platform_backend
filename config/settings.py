@@ -101,7 +101,10 @@ GHL_REDIRECT_URI = config(
     'GHL_REDIRECT_URI',
     default=f'{BACKEND_BASE_URL}/api/ghl/oauth/callback/',
 )
-GHL_SCOPES = config('GHL_SCOPES', default='locations.readonly')
+GHL_SCOPES = config(
+    'GHL_SCOPES',
+    default='locations.readonly users.readonly oauth.write oauth.readonly',
+)
 # Where the callback sends the browser once the install completes. Empty
 # means "return JSON instead of redirecting", which is handy in development.
 GHL_OAUTH_SUCCESS_REDIRECT = config('GHL_OAUTH_SUCCESS_REDIRECT', default='')
@@ -223,6 +226,13 @@ CELERY_TASK_SOFT_TIME_LIMIT = 240
 # Without this a worker that starts before redis is up exits instead of
 # waiting for it.
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# The web process must not stall an HTTP request on a dead Redis. Fail the
+# publish quickly; touch_agent already swallows the error.
+CELERY_BROKER_CONNECTION_MAX_RETRIES = 2
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'socket_connect_timeout': 2,
+    'socket_timeout': 2,
+}
 
 CELERY_BEAT_SCHEDULE = {
     'ghl-refresh-tokens': {

@@ -61,10 +61,10 @@ class AgentChecklistInline(admin.TabularInline):
 
 @admin.register(OnboardingAgent)
 class OnboardingAgentAdmin(admin.ModelAdmin):
-    list_display = ['full_name', 'cohort', 'start_date', 'owner', 'needs_sync']
+    list_display = ['full_name', 'email', 'user', 'cohort', 'start_date', 'owner', 'needs_sync']
     list_filter = ['cohort', 'manually_at_risk']
-    search_fields = ['full_name']
-    raw_id_fields = ['owner', 'last_updated_by']
+    search_fields = ['full_name', 'email', 'user__email', 'user__username']
+    raw_id_fields = ['user', 'owner', 'last_updated_by']
     inlines = [AgentCarrierInline, AgentChecklistInline]
 
 
