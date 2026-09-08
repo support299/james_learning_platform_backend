@@ -285,3 +285,36 @@ class SyncLocationUsersTest(APITestCase):
         assert result['locations'] == 2
         assert result['users'] == 2
         assert GhlUser.objects.filter(ghl_id='u-same').count() == 2
+
+
+class AutoLoginGhlIdTest(APITestCase):
+    def test_signs_in_by_ghl_id_when_user_fk_is_empty(self):
+        person = User.objects.create_user(
+            'adam-lopez', 'aylhealth@gmail.com', 'pw'
+        )
+        GhlUser.objects.create(
+            ghl_id='0E9bjsXbjNGedwyFtz3r',
+            location_id='32Xlzcg72vsKh62gCqEz',
+            name='Adam Lopez',
+            email='aylhealth@gmail.com',
+            role_type='agency',
+        )
+        res = self.client.post(
+            '/api/ghl/autologin/',
+            {
+                'logid': '0E9bjsXbjNGedwyFtz3r',
+                'location_id': '32Xlzcg72vsKh62gCqEz',
+            },
+            format='json',
+        )
+        assert res.status_code == 200, res.data
+        assert res.data['user']['id'] == person.id
+        assert GhlUser.objects.get(
+            ghl_id='0E9bjsXbjNGedwyFtz3r'
+        ).user_id == person.id
+
+    def test_unknown_ghl_id_is_404(self):
+        res = self.client.post(
+            '/api/ghl/autologin/', {'logid': 'missing'}, format='json'
+        )
+        assert res.status_code == 404

@@ -94,34 +94,6 @@ class CarrierViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class MyOnboardingView(APIView):
-    """The logged-in person's own onboarding case.
-
-    Staff use /agents/:id/. This is what the GHL iframe loads after autologin.
-    """
-
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        agent = agent_queryset().filter(user=request.user).first()
-        if agent is None:
-            return Response(
-                {'detail': 'No onboarding case is linked to this account.'},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-        settings = OnboardingSettings.load()
-        extra = annotate_agent(agent, settings)
-        data = OnboardingAgentSerializer(
-            agent,
-            context={'request': request, 'progress': extra, 'settings': settings},
-        ).data
-        staff = User.objects.filter(is_staff=True, is_active=True).order_by(
-            'first_name', 'username'
-        )
-        data['staff'] = StaffUserSerializer(staff, many=True).data
-        return Response(data)
-
-
 class ChecklistDefinitionViewSet(viewsets.ModelViewSet):
     serializer_class = ChecklistItemDefinitionSerializer
     queryset = ChecklistItemDefinition.objects.all()
@@ -361,6 +333,17 @@ class MyOnboardingView(APIView):
 
     def get(self, request):
         agent = agent_queryset().filter(user=request.user).first()
+        if agent is None and (request.user.email or '').strip():
+            agent = (
+                agent_queryset()
+                .filter(email__iexact=request.user.email)
+                .first()
+            )
+            if agent is not None and agent.user_id is None:
+                agent.user = request.user
+                agent.save(update_fields=['user'])
+            elif agent is not None and agent.user_id != request.user.id:
+                agent = None
         if agent is None:
             return Response(
                 {'detail': 'No onboarding case is linked to this account.'},
@@ -420,6 +403,11 @@ class ChecklistItemView(APIView):
                 )
 
         if 'is_flagged' in request.data:
+            if onboarding_role(request.user) is None:
+                return Response(
+                    {'detail': 'Only staff can flag items.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             item.is_flagged = bool(request.data['is_flagged'])
             log_event(
                 request.user,
@@ -495,6 +483,11 @@ class CarrierRequirementView(APIView):
                 f'{req.carrier.name}: {req.get_status_display()}',
             )
         if 'is_flagged' in request.data:
+            if onboarding_role(request.user) is None:
+                return Response(
+                    {'detail': 'Only staff can flag items.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             req.is_flagged = bool(request.data['is_flagged'])
             log_event(
                 request.user,
