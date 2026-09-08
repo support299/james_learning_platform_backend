@@ -10,6 +10,7 @@ from .models import (
     LessonCompletion,
     Question,
     QuestionOption,
+    SlideshowSlide,
     VideoProgress,
 )
 
@@ -63,6 +64,27 @@ class StudentQuestionSerializer(serializers.Serializer):
         }
 
 
+class SlideshowSlideSerializer(serializers.ModelSerializer):
+    """Wire shape for one slide of a slideshow lesson. `id` is writable (not
+    read-only) even though slides are never created through this serializer
+    — LessonSerializer._write_slides needs it in validated_data to match an
+    incoming slide entry against an existing row. Slide creation/image
+    upload go through their own endpoints (SlideshowSlideCreateView)."""
+
+    id = serializers.IntegerField()
+    image = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SlideshowSlide
+        fields = ['id', 'order', 'image', 'hotspots']
+
+    def get_image(self, obj):
+        request = self.context.get('request')
+        if not obj.image:
+            return None
+        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+
+
 class LessonSerializer(serializers.ModelSerializer):
     # `id` is the per-course slug; `type` maps onto the model's lesson_type.
     id = serializers.SlugField(source='slug', required=False)
@@ -70,6 +92,9 @@ class LessonSerializer(serializers.ModelSerializer):
         source='lesson_type', choices=Lesson.Type.choices, default=Lesson.Type.TEXT
     )
     questions = QuestionSerializer(many=True, required=False)
+    slides = SlideshowSlideSerializer(
+        source='slideshow_slides', many=True, required=False
+    )
 
     class Meta:
         model = Lesson
@@ -77,8 +102,11 @@ class LessonSerializer(serializers.ModelSerializer):
             'id', 'title', 'type', 'order', 'duration', 'overview',
             'completed', 'html', 'body', 'objectives', 'pro_tip',
             'question_count', 'meta', 'questions',
+            'slides', 'import_status', 'import_error',
         ]
-        read_only_fields = ['order', 'question_count']
+        read_only_fields = [
+            'order', 'question_count', 'import_status', 'import_error',
+        ]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -112,9 +140,32 @@ class LessonSerializer(serializers.ModelSerializer):
         lesson.question_count = len(questions)
         lesson.save(update_fields=['question_count'])
 
+    def _write_slides(self, lesson, slides):
+        """Update order/hotspots on existing slides, matched by id. Never
+        creates or deletes rows — slides omitted from the payload are left
+        alone (unlike _write_questions's delete-and-recreate, that would
+        orphan image files). Create/delete go through their own endpoints."""
+        # Each item's own `order` is authoritative, not its position in this
+        # payload — the payload need not cover every slide (see docstring),
+        # so deriving order from position would collide with an untouched
+        # slide's order under the (lesson, order) unique constraint.
+        existing = {s.id: s for s in lesson.slideshow_slides.all()}
+        for s in slides:
+            obj = existing.get(s.get('id'))
+            if obj is None:
+                raise serializers.ValidationError(
+                    {'slides': f"slide id {s.get('id')} does not belong to this lesson."}
+                )
+            obj.order = s.get('order', obj.order)
+            obj.hotspots = s.get('hotspots', obj.hotspots)
+            obj.save(update_fields=['order', 'hotspots'])
+
     @transaction.atomic
     def create(self, validated_data):
         questions = validated_data.pop('questions', None)
+        # A brand-new lesson has no slide rows yet to match by id — slides
+        # always arrive later via the slide-upload endpoint or pptx import.
+        validated_data.pop('slideshow_slides', None)
         lesson = Lesson.objects.create(**validated_data)
         if lesson.lesson_type == Lesson.Type.QUIZ and questions is not None:
             self._write_questions(lesson, questions)
@@ -123,11 +174,14 @@ class LessonSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         questions = validated_data.pop('questions', None)
+        slides = validated_data.pop('slideshow_slides', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
         if questions is not None:
             self._write_questions(instance, questions)
+        if slides is not None and instance.lesson_type == Lesson.Type.SLIDESHOW:
+            self._write_slides(instance, slides)
         return instance
 
 
@@ -136,10 +190,14 @@ class LessonSummarySerializer(serializers.ModelSerializer):
 
     id = serializers.SlugField(source='slug')
     type = serializers.CharField(source='lesson_type')
+    slide_count = serializers.IntegerField(source='slideshow_slides.count', read_only=True)
 
     class Meta:
         model = Lesson
-        fields = ['id', 'title', 'type', 'order', 'duration', 'question_count']
+        fields = [
+            'id', 'title', 'type', 'order', 'duration', 'question_count',
+            'slide_count',
+        ]
 
 
 class CourseSerializer(serializers.ModelSerializer):

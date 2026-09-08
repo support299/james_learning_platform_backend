@@ -12,12 +12,14 @@ from .models import (
     LessonCompletion,
     LessonVideo,
     Question,
+    SlideshowSlide,
     VideoProgress,
 )
 from .serializers import (
     CourseSerializer,
     LessonCompletionSerializer,
     LessonSerializer,
+    SlideshowSlideSerializer,
     VideoProgressSerializer,
 )
 from .slugs import unique_slug
@@ -384,6 +386,122 @@ class VideoProgressView(APIView):
         )
         progress.save(update_fields=['max_watched_seconds', 'focused_time_seconds', 'updated_at'])
         return Response(VideoProgressSerializer(progress).data)
+
+
+class SlideshowSlideCreateView(APIView):
+    """Add a slide (image) to the end of a slideshow lesson.
+
+      POST /api/courses/{course_pk}/lessons/{slug}/slides/   multipart, field `image`
+    """
+
+    permission_classes = [IsStaffOrReadOnly]
+
+    def get_lesson(self, course_pk, slug):
+        course = get_object_or_404(
+            visible_courses(self.request.user), pk=course_pk
+        )
+        return get_object_or_404(Lesson, course=course, slug=slug)
+
+    def post(self, request, course_pk, slug):
+        lesson = self.get_lesson(course_pk, slug)
+        image = request.FILES.get('image')
+        if not image:
+            return Response(
+                {'image': 'An image file is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        slide = SlideshowSlide.objects.create(
+            lesson=lesson, order=lesson.slideshow_slides.count(), image=image
+        )
+        return Response(
+            SlideshowSlideSerializer(slide, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SlideshowSlideDetailView(APIView):
+    """Replace a slide's image, or delete the slide entirely.
+
+      PATCH  /api/courses/{course_pk}/lessons/{slug}/slides/{slide_id}/   multipart, field `image`
+      DELETE /api/courses/{course_pk}/lessons/{slug}/slides/{slide_id}/
+    """
+
+    permission_classes = [IsStaffOrReadOnly]
+
+    def get_slide(self, course_pk, slug, slide_id):
+        course = get_object_or_404(
+            visible_courses(self.request.user), pk=course_pk
+        )
+        lesson = get_object_or_404(Lesson, course=course, slug=slug)
+        return get_object_or_404(SlideshowSlide, lesson=lesson, pk=slide_id)
+
+    def patch(self, request, course_pk, slug, slide_id):
+        slide = self.get_slide(course_pk, slug, slide_id)
+        image = request.FILES.get('image')
+        if not image:
+            return Response(
+                {'image': 'An image file is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Delete the old file before pointing at the new one, so replacing an
+        # image doesn't orphan the previous upload on disk.
+        slide.image.delete(save=False)
+        slide.image = image
+        slide.save(update_fields=['image'])
+        return Response(
+            SlideshowSlideSerializer(slide, context={'request': request}).data
+        )
+
+    def delete(self, request, course_pk, slug, slide_id):
+        slide = self.get_slide(course_pk, slug, slide_id)
+        slide.image.delete(save=False)
+        slide.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ImportSlideshowPptxView(APIView):
+    """Kick off an async .pptx -> slides conversion for a slideshow lesson.
+
+      POST /api/courses/{course_pk}/lessons/{slug}/import-pptx/   multipart, field `file`
+
+    Returns 202 immediately; the frontend polls the lesson endpoint's
+    `import_status`/`import_error`/`slides` fields for the result.
+    """
+
+    permission_classes = [IsStaffOrReadOnly]
+
+    def get_lesson(self, course_pk, slug):
+        course = get_object_or_404(
+            visible_courses(self.request.user), pk=course_pk
+        )
+        return get_object_or_404(Lesson, course=course, slug=slug)
+
+    def post(self, request, course_pk, slug):
+        lesson = self.get_lesson(course_pk, slug)
+        uploaded = request.FILES.get('file')
+        if not uploaded:
+            return Response(
+                {'file': 'A .pptx file is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        from django.core.files.storage import default_storage
+        from uuid import uuid4
+
+        tmp_path = default_storage.save(
+            f'tmp_imports/{uuid4()}.pptx', uploaded
+        )
+        lesson.import_status = Lesson.ImportStatus.PENDING
+        lesson.import_error = ''
+        lesson.save(update_fields=['import_status', 'import_error'])
+
+        # Lazy import: this view's whole job is kicking off the task, so we
+        # let a Redis-down failure surface as a 500 here rather than hiding
+        # it — unlike touch_agent's fire-and-forget pattern elsewhere, there
+        # is no unrelated request path to protect from stalling.
+        from .tasks import import_slideshow_pptx
+
+        import_slideshow_pptx.delay(lesson.id, tmp_path)
+        return Response({'import_status': lesson.import_status}, status=status.HTTP_202_ACCEPTED)
 
 
 class MyCompletionsView(generics.ListAPIView):

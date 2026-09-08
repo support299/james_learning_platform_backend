@@ -29,6 +29,7 @@ class Lesson(models.Model):
         VIDEO = 'video', 'Video'
         TEXT = 'text', 'Text'
         QUIZ = 'quiz', 'Quiz'
+        SLIDESHOW = 'slideshow', 'Slideshow'
 
     course = models.ForeignKey(
         Course, related_name='lessons', on_delete=models.CASCADE
@@ -58,6 +59,18 @@ class Lesson(models.Model):
     # Quiz metadata (questions live in the Question model).
     question_count = models.PositiveIntegerField(default=0)
     meta = models.CharField(max_length=60, blank=True)
+
+    # Slideshow pptx-import status (slides live in the SlideshowSlide model).
+    class ImportStatus(models.TextChoices):
+        IDLE = 'idle', 'Idle'
+        PENDING = 'pending', 'Pending'
+        DONE = 'done', 'Done'
+        FAILED = 'failed', 'Failed'
+
+    import_status = models.CharField(
+        max_length=10, choices=ImportStatus.choices, default=ImportStatus.IDLE
+    )
+    import_error = models.TextField(blank=True, default='')
 
     class Meta:
         ordering = ['order']
@@ -209,3 +222,27 @@ class VideoProgress(models.Model):
 
     def __str__(self):
         return f'{self.user} ⏵ {self.video_id}'
+
+
+class SlideshowSlide(models.Model):
+    """One slide of a `Lesson.Type.SLIDESHOW` lesson: a background image plus
+    a list of clickable hotspot rectangles. `hotspots` mirrors the frontend's
+    FSM schema directly — [{x, y, w, h, target}], coords as 0-1 fractions of
+    the slide so rendering is resolution-independent. `target` is the id of
+    another SlideshowSlide in the same lesson (not a positional index — a
+    slide can be reordered or deleted without breaking hotspots that still
+    point at it)."""
+
+    lesson = models.ForeignKey(
+        Lesson, related_name='slideshow_slides', on_delete=models.CASCADE
+    )
+    order = models.PositiveIntegerField(default=0)
+    image = models.ImageField(upload_to='slideshow_slides/')
+    hotspots = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['order']
+        unique_together = ('lesson', 'order')
+
+    def __str__(self):
+        return f'{self.lesson_id} / slide {self.order}'

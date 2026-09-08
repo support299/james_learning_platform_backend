@@ -3,9 +3,12 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     CourseViewSet,
+    ImportSlideshowPptxView,
     LessonCompletionView,
     LessonViewSet,
     MyCompletionsView,
+    SlideshowSlideCreateView,
+    SlideshowSlideDetailView,
     VideoProgressView,
 )
 
@@ -39,6 +42,21 @@ urlpatterns = router.urls + [
         'courses/<slug:course_pk>/lessons/<slug:slug>/video-progress/',
         VideoProgressView.as_view(),
         name='video-progress',
+    ),
+    path(
+        'courses/<slug:course_pk>/lessons/<slug:slug>/slides/',
+        SlideshowSlideCreateView.as_view(),
+        name='lesson-slides',
+    ),
+    path(
+        'courses/<slug:course_pk>/lessons/<slug:slug>/slides/<int:slide_id>/',
+        SlideshowSlideDetailView.as_view(),
+        name='lesson-slide-detail',
+    ),
+    path(
+        'courses/<slug:course_pk>/lessons/<slug:slug>/import-pptx/',
+        ImportSlideshowPptxView.as_view(),
+        name='lesson-import-pptx',
     ),
     path('me/completions/', MyCompletionsView.as_view(), name='my-completions'),
 ]

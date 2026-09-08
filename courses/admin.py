@@ -8,6 +8,7 @@ from .models import (
     LessonVideo,
     Question,
     QuestionOption,
+    SlideshowSlide,
     VideoProgress,
 )
 
@@ -33,12 +34,20 @@ class QuestionOptionInline(admin.TabularInline):
     ordering = ('order',)
 
 
+class SlideshowSlideInline(admin.TabularInline):
+    model = SlideshowSlide
+    extra = 0
+    fields = ('order', 'image', 'hotspots')
+    ordering = ('order',)
+
+
 @admin.register(Lesson)
 class LessonAdmin(admin.ModelAdmin):
     list_display = ('title', 'course', 'lesson_type', 'order')
     list_filter = ('lesson_type', 'course')
     search_fields = ('title', 'slug')
     ordering = ('course', 'order')
+    inlines = [SlideshowSlideInline]
 
 
 @admin.register(Question)
