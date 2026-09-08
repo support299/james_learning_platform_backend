@@ -561,8 +561,14 @@ class OnboardingApiTest(APITestCase):
             {'is_flagged': True},
             format='json',
         )
-        assert flagged.status_code == 200, flagged.data
-        assert flagged.data['is_flagged'] is True
+        assert flagged.status_code == 403
+
+        comment = self.client.patch(
+            f"/api/onboarding/agents/{me.data['id']}/checklist/{item_id}/",
+            {'is_completed': True},
+            format='json',
+        )
+        assert comment.status_code == 200, comment.data
 
         self.auth(self.student)
         assert self.client.get('/api/onboarding/me/').status_code == 404
@@ -592,3 +598,40 @@ class OnboardingApiTest(APITestCase):
         assert res.status_code == 200, res.data
         assert res.data['access']
         assert res.data['user']['id'] == jane.id
+
+    def test_ghl_autologin_opens_me_when_ghl_and_agent_user_are_empty(self):
+        from ghl.models import GhlUser
+
+        self.auth(self.assistant)
+        cohort = Cohort.objects.create(name='Week Ghl Me', start_date=date(2026, 8, 25))
+        created = self.client.post(
+            '/api/onboarding/agents/',
+            {
+                'full_name': 'Adam Lopez',
+                'email': 'aylhealth@gmail.com',
+                'cohort': cohort.id,
+            },
+            format='json',
+        )
+        assert created.status_code == 201, created.data
+        adam = User.objects.get(email='aylhealth@gmail.com')
+        OnboardingAgent.objects.filter(pk=created.data['id']).update(user=None)
+        GhlUser.objects.create(
+            ghl_id='0E9bjsXbjNGedwyFtz3r',
+            name='Adam Lopez',
+            email='aylhealth@gmail.com',
+            role_type='agency',
+        )
+
+        self.client.force_authenticate(user=None)
+        res = self.client.post(
+            '/api/ghl/autologin/',
+            {'logid': '0E9bjsXbjNGedwyFtz3r'},
+            format='json',
+        )
+        assert res.status_code == 200, res.data
+        assert res.data['user']['id'] == adam.id
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {res.data["access"]}')
+        me = self.client.get('/api/onboarding/me/')
+        assert me.status_code == 200, me.data
+        assert me.data['id'] == created.data['id']

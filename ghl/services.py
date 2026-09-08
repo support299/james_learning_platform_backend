@@ -534,6 +534,62 @@ def link_mirrored_user(ghl_id, user):
     return rows.first()
 
 
+def account_for_ghl_login(logid):
+    """Django account for iframe autologin, keyed on GHL user id.
+
+    `ghl_users.user_id` is often empty. Lookup is always `ghl_id == logid`.
+    If an onboarding case already exists for that email, sign in as that
+    case's User so /onboarding/me finds it.
+    """
+    from accounts.services import IdentityError, provision_person
+    from onboarding.models import OnboardingAgent
+
+    rows = (
+        GhlUser.objects.select_related('user').filter(ghl_id=str(logid))
+    )
+    ghl_user = rows.first()
+    if ghl_user is None:
+        return None
+
+    email = ghl_user.email or next(
+        (row.email for row in rows if row.email), ''
+    )
+    agent = None
+    if email:
+        agent = (
+            OnboardingAgent.objects.select_related('user')
+            .filter(email__iexact=email)
+            .order_by('pk')
+            .first()
+        )
+
+    account = None
+    if agent is not None and agent.user_id:
+        account = agent.user
+    if account is None:
+        account = ghl_user.user or next(
+            (row.user for row in rows if row.user_id), None
+        )
+    if account is None and email:
+        try:
+            account, _created = provision_person(
+                email=email,
+                full_name=ghl_user.name,
+                first_name=ghl_user.first_name,
+                last_name=ghl_user.last_name,
+            )
+        except IdentityError:
+            return None
+    if account is None:
+        return None
+
+    rows.filter(user=None).update(user=account)
+    if agent is not None and agent.user_id is None:
+        agent.user = account
+        agent.save(update_fields=['user'])
+    return account
+
+
 # Older name kept so existing imports keep working.
 link_user_to_student = link_ghl_to_user
 

@@ -233,22 +233,17 @@ class AutoLoginView(APIView):
     authentication_classes = []
 
     def post(self, request):
-        logid = str(request.data.get('logid') or '').strip()
+        raw = request.data.get('logid')
+        if isinstance(raw, dict):
+            raw = raw.get('logid') or raw.get('ghl_id') or ''
+        logid = str(raw or '').strip()
         if not logid:
             return Response(
                 {'detail': 'logid is required'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        ghl_user = (
-            GhlUser.objects.select_related('user')
-            .filter(ghl_id=logid)
-            .exclude(user=None)
-            .first()
-        )
-        # Unknown id and known-but-unlinked are the same answer to the caller:
-        # there is no account to sign in.
-        account = ghl_user.user if ghl_user else None
+        account = services.account_for_ghl_login(logid)
         if account is None:
             return Response(
                 {'detail': 'No student account is linked to that GHL user.'},
