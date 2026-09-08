@@ -239,6 +239,11 @@ class SlideshowSlide(models.Model):
     order = models.PositiveIntegerField(default=0)
     image = models.ImageField(upload_to='slideshow_slides/')
     hotspots = models.JSONField(default=list, blank=True)
+    # Required by default: a student must visit every required slide before
+    # the lesson's "Mark as Complete" unlocks (see LessonCompletionView).
+    # Marking a slide optional excludes it from that check without removing
+    # it from the deck.
+    is_required = models.BooleanField(default=True)
 
     class Meta:
         ordering = ['order']
@@ -246,3 +251,25 @@ class SlideshowSlide(models.Model):
 
     def __str__(self):
         return f'{self.lesson_id} / slide {self.order}'
+
+
+class SlideshowSlideVisit(models.Model):
+    """Records that a user has viewed a specific slide. One row per (user,
+    slide) — visiting a slide again is a no-op, matching LessonCompletion's
+    get_or_create pattern rather than logging every view."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='slideshow_slide_visits',
+        on_delete=models.CASCADE,
+    )
+    slide = models.ForeignKey(
+        SlideshowSlide, related_name='visits', on_delete=models.CASCADE
+    )
+    visited_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'slide')
+
+    def __str__(self):
+        return f'{self.user} ⏵ {self.slide_id}'

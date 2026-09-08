@@ -13,6 +13,7 @@ from .models import (
     LessonVideo,
     Question,
     SlideshowSlide,
+    SlideshowSlideVisit,
     VideoProgress,
 )
 from .serializers import (
@@ -185,6 +186,7 @@ class LessonCompletionView(APIView):
         # the lesson's html has no video embeds.
         reasons = self._video_completion_blockers(request.user, lesson)
         reasons += self._quiz_completion_blockers(request, lesson)
+        reasons += self._slideshow_completion_blockers(request.user, lesson)
         if reasons:
             return Response({'detail': reasons}, status=status.HTTP_400_BAD_REQUEST)
         completion, created = LessonCompletion.objects.get_or_create(
@@ -277,6 +279,28 @@ class LessonCompletionView(APIView):
                     'Answer every question correctly before marking this '
                     'lesson complete.'
                 ]
+        return []
+
+    @staticmethod
+    def _slideshow_completion_blockers(user, lesson):
+        """A slideshow lesson can't be marked complete until every required
+        slide (default: all of them) has been visited at least once."""
+        if lesson.lesson_type != Lesson.Type.SLIDESHOW:
+            return []
+        required_ids = set(
+            lesson.slideshow_slides.filter(is_required=True).values_list('id', flat=True)
+        )
+        if not required_ids:
+            return []
+        visited_ids = set(
+            SlideshowSlideVisit.objects.filter(
+                user=user, slide_id__in=required_ids
+            ).values_list('slide_id', flat=True)
+        )
+        if required_ids - visited_ids:
+            return [
+                'Visit every required slide before marking this lesson complete.'
+            ]
         return []
 
     def delete(self, request, course_pk, slug):
@@ -386,6 +410,39 @@ class VideoProgressView(APIView):
         )
         progress.save(update_fields=['max_watched_seconds', 'focused_time_seconds', 'updated_at'])
         return Response(VideoProgressSerializer(progress).data)
+
+
+class SlideshowVisitView(APIView):
+    """Per-user record of which slides in a slideshow lesson have been
+    viewed — the completion gate (see LessonCompletionView) checks this.
+
+      GET  /api/courses/{course_pk}/lessons/{slug}/slide-visits/   ids visited so far
+      POST /api/courses/{course_pk}/lessons/{slug}/slide-visits/   mark one slide visited, body {"slide": id}
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_lesson(self, course_pk, slug):
+        course = get_object_or_404(
+            visible_courses(self.request.user), pk=course_pk
+        )
+        return get_object_or_404(Lesson, course=course, slug=slug)
+
+    def get(self, request, course_pk, slug):
+        lesson = self.get_lesson(course_pk, slug)
+        visited = SlideshowSlideVisit.objects.filter(
+            user=request.user, slide__lesson=lesson
+        ).values_list('slide_id', flat=True)
+        return Response({'visited': list(visited)})
+
+    def post(self, request, course_pk, slug):
+        lesson = self.get_lesson(course_pk, slug)
+        slide_id = request.data.get('slide')
+        # 404 rather than 400 for a slide id outside this lesson — same
+        # "don't distinguish wrong from missing" posture as get_lesson above.
+        slide = get_object_or_404(SlideshowSlide, pk=slide_id, lesson=lesson)
+        SlideshowSlideVisit.objects.get_or_create(user=request.user, slide=slide)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SlideshowSlideCreateView(APIView):

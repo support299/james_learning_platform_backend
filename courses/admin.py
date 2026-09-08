@@ -37,7 +37,7 @@ class QuestionOptionInline(admin.TabularInline):
 class SlideshowSlideInline(admin.TabularInline):
     model = SlideshowSlide
     extra = 0
-    fields = ('order', 'image', 'hotspots')
+    fields = ('order', 'image', 'hotspots', 'is_required')
     ordering = ('order',)
 
 

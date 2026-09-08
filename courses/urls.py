@@ -9,6 +9,7 @@ from .views import (
     MyCompletionsView,
     SlideshowSlideCreateView,
     SlideshowSlideDetailView,
+    SlideshowVisitView,
     VideoProgressView,
 )
 
@@ -42,6 +43,11 @@ urlpatterns = router.urls + [
         'courses/<slug:course_pk>/lessons/<slug:slug>/video-progress/',
         VideoProgressView.as_view(),
         name='video-progress',
+    ),
+    path(
+        'courses/<slug:course_pk>/lessons/<slug:slug>/slide-visits/',
+        SlideshowVisitView.as_view(),
+        name='lesson-slide-visits',
     ),
     path(
         'courses/<slug:course_pk>/lessons/<slug:slug>/slides/',

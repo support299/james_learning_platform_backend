@@ -76,7 +76,7 @@ class SlideshowSlideSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SlideshowSlide
-        fields = ['id', 'order', 'image', 'hotspots']
+        fields = ['id', 'order', 'image', 'hotspots', 'is_required']
 
     def get_image(self, obj):
         request = self.context.get('request')
@@ -158,7 +158,8 @@ class LessonSerializer(serializers.ModelSerializer):
                 )
             obj.order = s.get('order', obj.order)
             obj.hotspots = s.get('hotspots', obj.hotspots)
-            obj.save(update_fields=['order', 'hotspots'])
+            obj.is_required = s.get('is_required', obj.is_required)
+            obj.save(update_fields=['order', 'hotspots', 'is_required'])
 
     @transaction.atomic
     def create(self, validated_data):
