@@ -570,6 +570,35 @@ class OnboardingApiTest(APITestCase):
         )
         assert comment.status_code == 200, comment.data
 
+        owner = self.client.patch(
+            f"/api/onboarding/agents/{me.data['id']}/checklist/{item_id}/",
+            {'owner_id': self.assistant.id},
+            format='json',
+        )
+        assert owner.status_code == 403
+
+        req_id = me.data['carriers'][0]['id']
+        approved = self.client.patch(
+            f"/api/onboarding/agents/{me.data['id']}/carriers/{req_id}/",
+            {'status': 'approved'},
+            format='json',
+        )
+        assert approved.status_code == 403
+
+        carrier_owner = self.client.patch(
+            f"/api/onboarding/agents/{me.data['id']}/carriers/{req_id}/",
+            {'owner_id': self.assistant.id},
+            format='json',
+        )
+        assert carrier_owner.status_code == 403
+
+        submitted = self.client.patch(
+            f"/api/onboarding/agents/{me.data['id']}/carriers/{req_id}/",
+            {'status': 'submitted'},
+            format='json',
+        )
+        assert submitted.status_code == 200, submitted.data
+
         self.auth(self.student)
         assert self.client.get('/api/onboarding/me/').status_code == 404
 
