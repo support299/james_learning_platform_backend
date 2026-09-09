@@ -426,6 +426,11 @@ class ChecklistItemView(APIView):
                 item.label,
             )
         if 'owner_id' in request.data:
+            if role is None:
+                return Response(
+                    {'detail': 'Only staff can assign owners.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             owner_id = request.data['owner_id']
             item.owner = (
                 User.objects.filter(pk=owner_id, is_staff=True).first()
@@ -469,6 +474,14 @@ class CarrierRequirementView(APIView):
             valid = {c.value for c in AgentCarrierRequirement.Status}
             if new_status not in valid:
                 return Response({'status': 'Invalid carrier status.'}, status=400)
+            if (
+                new_status == AgentCarrierRequirement.Status.APPROVED
+                and role is None
+            ):
+                return Response(
+                    {'detail': 'Only staff can mark a carrier as approved.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             req.status = new_status
             if new_status == AgentCarrierRequirement.Status.APPROVED:
                 req.completed_by = request.user
@@ -506,6 +519,11 @@ class CarrierRequirementView(APIView):
                 req.carrier.name,
             )
         if 'owner_id' in request.data:
+            if role is None:
+                return Response(
+                    {'detail': 'Only staff can assign owners.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             owner_id = request.data['owner_id']
             req.owner = (
                 User.objects.filter(pk=owner_id, is_staff=True).first()
