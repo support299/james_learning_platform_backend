@@ -27,11 +27,19 @@ from .models import Lesson, SlideshowSlide
 logger = logging.getLogger(__name__)
 
 
-@shared_task(name='courses.import_slideshow_pptx', bind=True, max_retries=0)
+@shared_task(name='courses.import_slideshow_pptx', bind=True, max_retries=0, acks_late=True)
 def import_slideshow_pptx(self, lesson_id, tmp_relpath):
     """No retry: a bad pptx or a soffice crash is deterministic, so retrying
-    just wastes time — the fix is a different file, not another attempt."""
-    lesson = Lesson.objects.get(pk=lesson_id)
+    just wastes time — the fix is a different file, not another attempt.
+    acks_late so a worker dying mid-run (as happened once in production)
+    gets the task redelivered to another worker instead of losing it —
+    safe since the whole pipeline is idempotent (delete-and-recreate)."""
+    try:
+        lesson = Lesson.objects.get(pk=lesson_id)
+    except Lesson.DoesNotExist:
+        logger.warning('Slideshow import for lesson %s: lesson no longer exists', lesson_id)
+        default_storage.delete(tmp_relpath)
+        return
     pptx_path = default_storage.path(tmp_relpath)
 
     try:
@@ -82,6 +90,12 @@ def import_slideshow_pptx(self, lesson_id, tmp_relpath):
                     'with a broken click-action relationship', lesson_id, skipped,
                 )
 
+            if not Lesson.objects.filter(pk=lesson_id).exists():
+                logger.warning(
+                    'Slideshow import for lesson %s: lesson was deleted mid-import, aborting', lesson_id,
+                )
+                return
+
             lesson.slideshow_slides.all().delete()
             created = []
             for i, page in enumerate(pages):
@@ -108,10 +122,13 @@ def import_slideshow_pptx(self, lesson_id, tmp_relpath):
         lesson.import_status = Lesson.ImportStatus.DONE
         lesson.import_error = ''
         lesson.save(update_fields=['import_status', 'import_error'])
-    except Exception as exc:
+    except Exception:
         logger.exception('Slideshow import failed for lesson %s', lesson_id)
         lesson.import_status = Lesson.ImportStatus.FAILED
-        lesson.import_error = str(exc)[:2000]
+        lesson.import_error = (
+            'Could not process this file — check it is a valid, non-corrupted '
+            '.pptx and try again. Full details are in the server logs.'
+        )
         lesson.save(update_fields=['import_status', 'import_error'])
     finally:
         default_storage.delete(tmp_relpath)

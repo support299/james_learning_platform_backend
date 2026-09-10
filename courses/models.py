@@ -1,5 +1,7 @@
 from django.conf import settings
 from django.db import models
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 
 class Course(models.Model):
@@ -71,6 +73,7 @@ class Lesson(models.Model):
         max_length=10, choices=ImportStatus.choices, default=ImportStatus.IDLE
     )
     import_error = models.TextField(blank=True, default='')
+    import_started_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['order']
@@ -251,6 +254,12 @@ class SlideshowSlide(models.Model):
 
     def __str__(self):
         return f'{self.lesson_id} / slide {self.order}'
+
+
+@receiver(post_delete, sender=SlideshowSlide)
+def delete_slideshow_slide_image(sender, instance, **kwargs):
+    if instance.image:
+        instance.image.delete(save=False)
 
 
 class SlideshowSlideVisit(models.Model):

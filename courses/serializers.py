@@ -141,23 +141,28 @@ class LessonSerializer(serializers.ModelSerializer):
         lesson.save(update_fields=['question_count'])
 
     def _write_slides(self, lesson, slides):
-        """Update order/hotspots on existing slides, matched by id. Never
-        creates or deletes rows — slides omitted from the payload are left
-        alone (unlike _write_questions's delete-and-recreate, that would
-        orphan image files). Create/delete go through their own endpoints."""
-        # Each item's own `order` is authoritative, not its position in this
-        # payload — the payload need not cover every slide (see docstring),
-        # so deriving order from position would collide with an untouched
-        # slide's order under the (lesson, order) unique constraint.
         existing = {s.id: s for s in lesson.slideshow_slides.all()}
+        valid_targets = set(existing.keys())
         for s in slides:
             obj = existing.get(s.get('id'))
             if obj is None:
                 raise serializers.ValidationError(
                     {'slides': f"slide id {s.get('id')} does not belong to this lesson."}
                 )
+            hotspots = s.get('hotspots', obj.hotspots)
+            for h in hotspots:
+                if h.get('target') not in valid_targets:
+                    raise serializers.ValidationError(
+                        {'slides': f"hotspot target {h.get('target')} is not a slide in this lesson."}
+                    )
+                for key in ('x', 'y', 'w', 'h'):
+                    value = h.get(key)
+                    if not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                        raise serializers.ValidationError(
+                            {'slides': f"hotspot {key} must be a number between 0 and 1."}
+                        )
             obj.order = s.get('order', obj.order)
-            obj.hotspots = s.get('hotspots', obj.hotspots)
+            obj.hotspots = hotspots
             obj.is_required = s.get('is_required', obj.is_required)
             obj.save(update_fields=['order', 'hotspots', 'is_required'])
 

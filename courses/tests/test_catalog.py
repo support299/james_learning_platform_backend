@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
-from .models import Course, Enrollment, Lesson
+from ..models import Course, Enrollment, Lesson
 
 User = get_user_model()
 

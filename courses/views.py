@@ -1,5 +1,9 @@
+from datetime import timedelta
+
 from django.db import transaction
+from django.db.models import Max
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -59,6 +63,13 @@ def visible_courses(user):
     if not user.is_staff:
         queryset = queryset.filter(enrollments__user=user)
     return queryset
+
+
+def get_slideshow_lesson(user, course_pk, slug):
+    course = get_object_or_404(visible_courses(user), pk=course_pk)
+    return get_object_or_404(
+        Lesson, course=course, slug=slug, lesson_type=Lesson.Type.SLIDESHOW
+    )
 
 
 class CourseViewSet(viewsets.ModelViewSet):
@@ -422,21 +433,15 @@ class SlideshowVisitView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_lesson(self, course_pk, slug):
-        course = get_object_or_404(
-            visible_courses(self.request.user), pk=course_pk
-        )
-        return get_object_or_404(Lesson, course=course, slug=slug)
-
     def get(self, request, course_pk, slug):
-        lesson = self.get_lesson(course_pk, slug)
+        lesson = get_slideshow_lesson(request.user, course_pk, slug)
         visited = SlideshowSlideVisit.objects.filter(
             user=request.user, slide__lesson=lesson
         ).values_list('slide_id', flat=True)
         return Response({'visited': list(visited)})
 
     def post(self, request, course_pk, slug):
-        lesson = self.get_lesson(course_pk, slug)
+        lesson = get_slideshow_lesson(request.user, course_pk, slug)
         slide_id = request.data.get('slide')
         # 404 rather than 400 for a slide id outside this lesson — same
         # "don't distinguish wrong from missing" posture as get_lesson above.
@@ -453,22 +458,18 @@ class SlideshowSlideCreateView(APIView):
 
     permission_classes = [IsStaffOrReadOnly]
 
-    def get_lesson(self, course_pk, slug):
-        course = get_object_or_404(
-            visible_courses(self.request.user), pk=course_pk
-        )
-        return get_object_or_404(Lesson, course=course, slug=slug)
-
     def post(self, request, course_pk, slug):
-        lesson = self.get_lesson(course_pk, slug)
+        lesson = get_slideshow_lesson(request.user, course_pk, slug)
         image = request.FILES.get('image')
         if not image:
             return Response(
                 {'image': 'An image file is required.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        next_order = lesson.slideshow_slides.aggregate(Max('order'))['order__max']
+        next_order = 0 if next_order is None else next_order + 1
         slide = SlideshowSlide.objects.create(
-            lesson=lesson, order=lesson.slideshow_slides.count(), image=image
+            lesson=lesson, order=next_order, image=image
         )
         return Response(
             SlideshowSlideSerializer(slide, context={'request': request}).data,
@@ -485,23 +486,18 @@ class SlideshowSlideDetailView(APIView):
 
     permission_classes = [IsStaffOrReadOnly]
 
-    def get_slide(self, course_pk, slug, slide_id):
-        course = get_object_or_404(
-            visible_courses(self.request.user), pk=course_pk
-        )
-        lesson = get_object_or_404(Lesson, course=course, slug=slug)
+    def get_slide(self, request, course_pk, slug, slide_id):
+        lesson = get_slideshow_lesson(request.user, course_pk, slug)
         return get_object_or_404(SlideshowSlide, lesson=lesson, pk=slide_id)
 
     def patch(self, request, course_pk, slug, slide_id):
-        slide = self.get_slide(course_pk, slug, slide_id)
+        slide = self.get_slide(request, course_pk, slug, slide_id)
         image = request.FILES.get('image')
         if not image:
             return Response(
                 {'image': 'An image file is required.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # Delete the old file before pointing at the new one, so replacing an
-        # image doesn't orphan the previous upload on disk.
         slide.image.delete(save=False)
         slide.image = image
         slide.save(update_fields=['image'])
@@ -510,8 +506,7 @@ class SlideshowSlideDetailView(APIView):
         )
 
     def delete(self, request, course_pk, slug, slide_id):
-        slide = self.get_slide(course_pk, slug, slide_id)
-        slide.image.delete(save=False)
+        slide = self.get_slide(request, course_pk, slug, slide_id)
         slide.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -527,14 +522,21 @@ class ImportSlideshowPptxView(APIView):
 
     permission_classes = [IsStaffOrReadOnly]
 
-    def get_lesson(self, course_pk, slug):
-        course = get_object_or_404(
-            visible_courses(self.request.user), pk=course_pk
-        )
-        return get_object_or_404(Lesson, course=course, slug=slug)
+    # A task whose worker died mid-run never reports back, so a naive
+    # is_status_pending check would lock the lesson out of re-import forever
+    # (exactly what happened in production once). Past this age, a pending
+    # import is treated as abandoned and a new one is allowed to start.
+    STALE_AFTER = timedelta(minutes=10)
 
     def post(self, request, course_pk, slug):
-        lesson = self.get_lesson(course_pk, slug)
+        lesson = get_slideshow_lesson(request.user, course_pk, slug)
+        if lesson.import_status == Lesson.ImportStatus.PENDING:
+            started = lesson.import_started_at
+            if started and timezone.now() - started < self.STALE_AFTER:
+                return Response(
+                    {'detail': 'An import is already in progress for this lesson.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
         uploaded = request.FILES.get('file')
         if not uploaded:
             return Response(
@@ -549,7 +551,8 @@ class ImportSlideshowPptxView(APIView):
         )
         lesson.import_status = Lesson.ImportStatus.PENDING
         lesson.import_error = ''
-        lesson.save(update_fields=['import_status', 'import_error'])
+        lesson.import_started_at = timezone.now()
+        lesson.save(update_fields=['import_status', 'import_error', 'import_started_at'])
 
         # Lazy import: this view's whole job is kicking off the task, so we
         # let a Redis-down failure surface as a 500 here rather than hiding
