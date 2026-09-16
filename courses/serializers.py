@@ -95,6 +95,7 @@ class LessonSerializer(serializers.ModelSerializer):
     slides = SlideshowSlideSerializer(
         source='slideshow_slides', many=True, required=False
     )
+    image = serializers.SerializerMethodField()
 
     class Meta:
         model = Lesson
@@ -103,10 +104,17 @@ class LessonSerializer(serializers.ModelSerializer):
             'completed', 'html', 'body', 'objectives', 'pro_tip',
             'question_count', 'meta', 'questions',
             'slides', 'import_status', 'import_error',
+            'image', 'hotspots',
         ]
         read_only_fields = [
-            'order', 'question_count', 'import_status', 'import_error',
+            'order', 'question_count', 'import_status', 'import_error', 'image',
         ]
+
+    def get_image(self, obj):
+        request = self.context.get('request')
+        if not obj.image:
+            return None
+        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -140,6 +148,24 @@ class LessonSerializer(serializers.ModelSerializer):
         lesson.question_count = len(questions)
         lesson.save(update_fields=['question_count'])
 
+    def _write_hotspots(self, lesson, hotspots):
+        valid_targets = set(
+            lesson.course.lessons.exclude(pk=lesson.pk).values_list('slug', flat=True)
+        )
+        for h in hotspots:
+            if h.get('target') not in valid_targets:
+                raise serializers.ValidationError(
+                    {'hotspots': f"hotspot target {h.get('target')!r} is not a lesson in this course."}
+                )
+            for key in ('x', 'y', 'w', 'h'):
+                value = h.get(key)
+                if not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                    raise serializers.ValidationError(
+                        {'hotspots': f"hotspot {key} must be a number between 0 and 1."}
+                    )
+        lesson.hotspots = hotspots
+        lesson.save(update_fields=['hotspots'])
+
     def _write_slides(self, lesson, slides):
         existing = {s.id: s for s in lesson.slideshow_slides.all()}
         valid_targets = set(existing.keys())
@@ -169,9 +195,11 @@ class LessonSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data):
         questions = validated_data.pop('questions', None)
-        # A brand-new lesson has no slide rows yet to match by id — slides
-        # always arrive later via the slide-upload endpoint or pptx import.
+        # A brand-new lesson has no slide/sibling rows yet to validate
+        # hotspot targets against — slides and hotspots always arrive later,
+        # via the slide-upload endpoint, pptx import, or a follow-up PATCH.
         validated_data.pop('slideshow_slides', None)
+        validated_data.pop('hotspots', None)
         lesson = Lesson.objects.create(**validated_data)
         if lesson.lesson_type == Lesson.Type.QUIZ and questions is not None:
             self._write_questions(lesson, questions)
@@ -181,6 +209,7 @@ class LessonSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         questions = validated_data.pop('questions', None)
         slides = validated_data.pop('slideshow_slides', None)
+        hotspots = validated_data.pop('hotspots', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
@@ -188,6 +217,8 @@ class LessonSerializer(serializers.ModelSerializer):
             self._write_questions(instance, questions)
         if slides is not None and instance.lesson_type == Lesson.Type.SLIDESHOW:
             self._write_slides(instance, slides)
+        if hotspots is not None and instance.lesson_type == Lesson.Type.IMAGE:
+            self._write_hotspots(instance, hotspots)
         return instance
 
 
@@ -197,12 +228,16 @@ class LessonSummarySerializer(serializers.ModelSerializer):
     id = serializers.SlugField(source='slug')
     type = serializers.CharField(source='lesson_type')
     slide_count = serializers.IntegerField(source='slideshow_slides.count', read_only=True)
+    hotspot_count = serializers.SerializerMethodField()
+
+    def get_hotspot_count(self, obj):
+        return len(obj.hotspots)
 
     class Meta:
         model = Lesson
         fields = [
             'id', 'title', 'type', 'order', 'duration', 'question_count',
-            'slide_count',
+            'slide_count', 'hotspot_count',
         ]
 
 
@@ -218,8 +253,9 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'description', 'is_custom',
             'lesson_count', 'lessons', 'created_at', 'updated_at',
+            'import_status', 'import_error',
         ]
-        read_only_fields = ['created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at', 'import_status', 'import_error']
 
     def get_fields(self):
         fields = super().get_fields()

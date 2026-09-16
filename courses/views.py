@@ -169,7 +169,17 @@ class LessonViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         course = instance.course
+        deleted_slug = instance.slug
         instance.delete()
+        # Sibling image lessons aren't loaded client-side at delete time, so
+        # a dangling hotspot pointing at this lesson can't be scrubbed there
+        # the way SlideshowEditorPage.removeSlide does for slide-level
+        # deletes — do it here instead.
+        for sibling in course.lessons.filter(lesson_type=Lesson.Type.IMAGE):
+            trimmed = [h for h in sibling.hotspots if h.get('target') != deleted_slug]
+            if len(trimmed) != len(sibling.hotspots):
+                sibling.hotspots = trimmed
+                sibling.save(update_fields=['hotspots'])
         course.save()  # bump updated_at
 
 
@@ -562,6 +572,109 @@ class ImportSlideshowPptxView(APIView):
 
         import_slideshow_pptx.delay(lesson.id, tmp_path)
         return Response({'import_status': lesson.import_status}, status=status.HTTP_202_ACCEPTED)
+
+
+class ImportCoursePptxView(APIView):
+    """Kick off an async .pptx import into an existing course, either as one
+    new slideshow lesson (mode=slideshow — creates the lesson synchronously
+    and reuses import_slideshow_pptx unchanged) or as one new image lesson
+    per slide with lesson-to-lesson jump hotspots (mode=lesson).
+
+      POST /api/courses/{course_pk}/import-pptx/   multipart, fields `file`, `mode`
+    """
+
+    permission_classes = [IsStaffOrReadOnly]
+
+    # Same abandoned-import posture as ImportSlideshowPptxView.STALE_AFTER.
+    STALE_AFTER = timedelta(minutes=10)
+
+    def post(self, request, course_pk):
+        course = get_object_or_404(visible_courses(request.user), pk=course_pk)
+        mode = request.data.get('mode')
+        if mode not in ('slideshow', 'lesson'):
+            return Response(
+                {'mode': "Must be 'slideshow' or 'lesson'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        uploaded = request.FILES.get('file')
+        if not uploaded:
+            return Response(
+                {'file': 'A .pptx file is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from django.core.files.storage import default_storage
+        from uuid import uuid4
+
+        if mode == 'lesson':
+            if course.import_status == Course.ImportStatus.PENDING:
+                started = course.import_started_at
+                if started and timezone.now() - started < self.STALE_AFTER:
+                    return Response(
+                        {'detail': 'An import is already in progress for this course.'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+            tmp_path = default_storage.save(f'tmp_imports/{uuid4()}.pptx', uploaded)
+            course.import_status = Course.ImportStatus.PENDING
+            course.import_error = ''
+            course.import_started_at = timezone.now()
+            course.save(update_fields=['import_status', 'import_error', 'import_started_at'])
+
+            from .tasks import import_course_lessons_pptx
+
+            import_course_lessons_pptx.delay(course.id, tmp_path)
+            return Response({'import_status': course.import_status}, status=status.HTTP_202_ACCEPTED)
+
+        existing = set(course.lessons.values_list('slug', flat=True))
+        lesson = Lesson.objects.create(
+            course=course,
+            slug=unique_slug('imported-slideshow', existing),
+            title='Imported slideshow',
+            lesson_type=Lesson.Type.SLIDESHOW,
+            order=course.lessons.count(),
+        )
+        course.save()  # bump updated_at
+
+        tmp_path = default_storage.save(f'tmp_imports/{uuid4()}.pptx', uploaded)
+        lesson.import_status = Lesson.ImportStatus.PENDING
+        lesson.import_started_at = timezone.now()
+        lesson.save(update_fields=['import_status', 'import_started_at'])
+
+        from .tasks import import_slideshow_pptx
+
+        import_slideshow_pptx.delay(lesson.id, tmp_path)
+        return Response(
+            {
+                'import_status': lesson.import_status,
+                'lesson': LessonSerializer(lesson, context={'request': request}).data,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class ImageLessonImageView(APIView):
+    """Replace an image lesson's picture after it's been created.
+
+      PATCH /api/courses/{course_pk}/lessons/{slug}/image/   multipart, field `image`
+    """
+
+    permission_classes = [IsStaffOrReadOnly]
+
+    def patch(self, request, course_pk, slug):
+        course = get_object_or_404(visible_courses(request.user), pk=course_pk)
+        lesson = get_object_or_404(
+            Lesson, course=course, slug=slug, lesson_type=Lesson.Type.IMAGE
+        )
+        image = request.FILES.get('image')
+        if not image:
+            return Response(
+                {'image': 'An image file is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        lesson.image.delete(save=False)
+        lesson.image = image
+        lesson.save(update_fields=['image'])
+        return Response(LessonSerializer(lesson, context={'request': request}).data)
 
 
 class MyCompletionsView(generics.ListAPIView):

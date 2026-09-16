@@ -15,6 +15,22 @@ class Course(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Course-level pptx-import status, used only by the "import as lesson"
+    # bulk path (courses.tasks.import_course_lessons_pptx) — one lesson per
+    # slide, so there's no single Lesson to poll the way the "import as
+    # slideshow" path polls Lesson.import_status.
+    class ImportStatus(models.TextChoices):
+        IDLE = 'idle', 'Idle'
+        PENDING = 'pending', 'Pending'
+        DONE = 'done', 'Done'
+        FAILED = 'failed', 'Failed'
+
+    import_status = models.CharField(
+        max_length=10, choices=ImportStatus.choices, default=ImportStatus.IDLE
+    )
+    import_error = models.TextField(blank=True, default='')
+    import_started_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ['-updated_at']
 
@@ -32,6 +48,7 @@ class Lesson(models.Model):
         TEXT = 'text', 'Text'
         QUIZ = 'quiz', 'Quiz'
         SLIDESHOW = 'slideshow', 'Slideshow'
+        IMAGE = 'image', 'Image'
 
     course = models.ForeignKey(
         Course, related_name='lessons', on_delete=models.CASCADE
@@ -74,6 +91,16 @@ class Lesson(models.Model):
     )
     import_error = models.TextField(blank=True, default='')
     import_started_at = models.DateTimeField(null=True, blank=True)
+
+    # `Type.IMAGE` lessons only: one image plus a list of clickable hotspot
+    # rectangles that jump to another lesson. Mirrors SlideshowSlide's
+    # {x, y, w, h, target} shape, but `target` is another Lesson's `slug` in
+    # this same course (not a SlideshowSlide id) — a lesson-to-lesson jump
+    # rather than a slide-to-slide one. Keyed by slug, not position, so
+    # reordering lessons or inserting a new one between/after them never
+    # breaks a jump.
+    image = models.ImageField(upload_to='lesson_images/', blank=True, null=True)
+    hotspots = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ['order']
