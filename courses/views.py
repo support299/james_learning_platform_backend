@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 from .embeds import extract_lesson_videos
 from .models import (
     Course,
+    Enrollment,
     Lesson,
     LessonCompletion,
     LessonVideo,
@@ -150,6 +151,18 @@ class LessonViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return Lesson.objects.filter(course=self.get_course())
 
+    def retrieve(self, request, *args, **kwargs):
+        lesson = self.get_object()
+        # Record this as the student's in-progress lesson so the sidebar's
+        # "currently open, not yet completed" exception survives a page
+        # refresh (see Enrollment.last_visited_lesson). Staff previewing a
+        # lesson doesn't have (or need) a student enrollment row.
+        if not request.user.is_staff:
+            Enrollment.objects.filter(
+                user=request.user, course_id=self.kwargs['course_pk']
+            ).update(last_visited_lesson=lesson)
+        return Response(self.get_serializer(lesson).data)
+
     def perform_create(self, serializer):
         course = self.get_course()
         existing = set(course.lessons.values_list('slug', flat=True))
@@ -200,16 +213,26 @@ class LessonCompletionView(APIView):
 
     def post(self, request, course_pk, slug):
         lesson = self.get_lesson(course_pk, slug)
-        # Keyed off actual embed content, not `lesson_type` — lessons authored
-        # through the editor are always saved as `lesson_type: 'text'`
-        # regardless of content, so `lesson_type == VIDEO` would never match
-        # real data. `_video_completion_blockers` already no-ops ([]) when
-        # the lesson's html has no video embeds.
-        reasons = self._video_completion_blockers(request.user, lesson)
-        reasons += self._quiz_completion_blockers(request, lesson)
-        reasons += self._slideshow_completion_blockers(request.user, lesson)
-        if reasons:
-            return Response({'detail': reasons}, status=status.HTTP_400_BAD_REQUEST)
+        existing = LessonCompletion.objects.filter(
+            user=request.user, lesson=lesson
+        ).first()
+        # Re-affirming an already-completed lesson never re-runs the
+        # blockers below — otherwise a lesson completed before the order
+        # gate existed (or before a video/quiz retro-check tightened) would
+        # get un-completable on the next idempotent POST.
+        if existing is None:
+            # Keyed off actual embed content, not `lesson_type` — lessons
+            # authored through the editor are always saved as
+            # `lesson_type: 'text'` regardless of content, so
+            # `lesson_type == VIDEO` would never match real data.
+            # `_video_completion_blockers` already no-ops ([]) when the
+            # lesson's html has no video embeds.
+            reasons = self._order_completion_blockers(request.user, lesson)
+            reasons += self._video_completion_blockers(request.user, lesson)
+            reasons += self._quiz_completion_blockers(request, lesson)
+            reasons += self._slideshow_completion_blockers(request.user, lesson)
+            if reasons:
+                return Response({'detail': reasons}, status=status.HTTP_400_BAD_REQUEST)
         completion, created = LessonCompletion.objects.get_or_create(
             user=request.user, lesson=lesson
         )
@@ -217,6 +240,29 @@ class LessonCompletionView(APIView):
             LessonCompletionSerializer(completion).data,
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+    @staticmethod
+    def _order_completion_blockers(user, lesson):
+        """A lesson can't be marked complete until every earlier lesson (by
+        `Lesson.order`) in the same course is already completed. Mirrors the
+        frontend's linear-progress gate server-side, so a raw POST here can't
+        skip ahead regardless of what the UI shows. Completions predating
+        this gate are grandfathered — this only blocks *new* completions."""
+        earlier_ids = set(
+            Lesson.objects.filter(
+                course=lesson.course, order__lt=lesson.order
+            ).values_list('id', flat=True)
+        )
+        if not earlier_ids:
+            return []
+        completed_ids = set(
+            LessonCompletion.objects.filter(
+                user=user, lesson_id__in=earlier_ids
+            ).values_list('lesson_id', flat=True)
+        )
+        if earlier_ids - completed_ids:
+            return ['Complete the earlier lessons in this course first.']
+        return []
 
     @staticmethod
     def _video_completion_blockers(user, lesson):

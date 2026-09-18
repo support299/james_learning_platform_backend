@@ -165,6 +165,18 @@ class Enrollment(models.Model):
         null=True,
         blank=True,
     )
+    # The last lesson this student opened in this course, even if not yet
+    # completed. Lets the sidebar's "currently open lesson" exception survive
+    # a page refresh instead of relying on client-only state. Set on every
+    # lesson-detail GET (see LessonViewSet.retrieve); SET_NULL so deleting
+    # the lesson doesn't take the enrollment with it.
+    last_visited_lesson = models.ForeignKey(
+        Lesson,
+        related_name='+',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         unique_together = ('user', 'course')

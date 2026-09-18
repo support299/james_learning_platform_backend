@@ -81,6 +81,12 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
+    'DEFAULT_THROTTLE_RATES': {
+        # GHL autologin trades a bare, non-expiring GHL user id for a session
+        # (see ghl/views.py AutoLoginView) — this is the only brake against
+        # someone brute-forcing/guessing ids until that scheme is replaced.
+        'ghl_autologin': '20/min',
+    },
 }
 
 from datetime import timedelta  # noqa: E402
@@ -190,6 +196,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # User-uploaded lesson images. Served by Django itself only in DEBUG (see
 # config/urls.py) — a real deployment should front this with the webserver

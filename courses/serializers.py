@@ -247,15 +247,30 @@ class CourseSerializer(serializers.ModelSerializer):
     id = serializers.SlugField(required=False)
     lessons = LessonSummarySerializer(many=True, read_only=True)
     lesson_count = serializers.IntegerField(source='lessons.count', read_only=True)
+    last_visited_lesson = serializers.SerializerMethodField()
 
     class Meta:
         model = Course
         fields = [
             'id', 'title', 'description', 'is_custom',
             'lesson_count', 'lessons', 'created_at', 'updated_at',
-            'import_status', 'import_error',
+            'import_status', 'import_error', 'last_visited_lesson',
         ]
         read_only_fields = ['created_at', 'updated_at', 'import_status', 'import_error']
+
+    def get_last_visited_lesson(self, course):
+        # The requesting student's in-progress lesson slug (or None), so the
+        # frontend's sidebar-unlock exception survives a page refresh
+        # instead of relying on client-only state. See
+        # Enrollment.last_visited_lesson.
+        request = self.context.get('request')
+        if request is None or not request.user.is_authenticated:
+            return None
+        enrollment = Enrollment.objects.filter(
+            user=request.user, course=course
+        ).select_related('last_visited_lesson').first()
+        lesson = enrollment.last_visited_lesson if enrollment else None
+        return lesson.slug if lesson else None
 
     def get_fields(self):
         fields = super().get_fields()

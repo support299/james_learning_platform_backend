@@ -20,7 +20,11 @@ from django.contrib import admin
 from django.urls import include, path
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    # Not `admin/` — nginx only proxies specific prefixes to gunicorn
+    # (see /etc/nginx/sites-available/james_learning_platform on the box);
+    # `dj_admin/` is its own prefix there too, kept in sync with this path
+    # so Django's own admin:* URL reversal needs no rewrite/FORCE_SCRIPT_NAME.
+    path('dj_admin/', admin.site.urls),
     path('api/auth/', include('accounts.urls')),
     path('api/onboarding/', include('onboarding.urls')),
     path('api/', include('ghl.urls')),
