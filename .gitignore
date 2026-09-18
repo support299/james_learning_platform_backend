@@ -22,4 +22,3 @@ venv.bak/
 celerybeat-schedule
 .coverage
 htmlcov/
-PLAN_LESSON_GATING.md
