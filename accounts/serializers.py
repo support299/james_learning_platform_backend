@@ -42,6 +42,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         # second round trip. It's a convenience for the client, not a
         # permission — the server still checks is_staff on every request.
         token['is_admin'] = user.is_staff
+        token['is_superadmin'] = user.is_superuser
         return token
 
     def validate(self, attrs):
@@ -55,6 +56,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         # Alongside the tokens, so the client can style the admin UI on the
         # login response instead of waiting for /me.
         data['is_admin'] = self.user.is_staff
+        data['is_superadmin'] = self.user.is_superuser
         return data
 
 
@@ -64,8 +66,12 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        # `is_staff` tells the client whether to show the admin area.
-        fields = ['id', 'username', 'email', 'is_staff', 'onboarding_role']
+        # `is_staff` tells the client whether to show the admin area;
+        # `is_superuser` whether to show admin-user management.
+        fields = [
+            'id', 'username', 'email', 'is_staff', 'is_superuser',
+            'onboarding_role',
+        ]
 
     def get_onboarding_role(self, obj):
         from onboarding.permissions import onboarding_role
@@ -230,4 +236,77 @@ class StudentSerializer(serializers.ModelSerializer):
             instance.set_password(password)
         instance.save()
         self._apply_ghl_link(instance, ghl_user_id)
+        return instance
+
+
+class AdminUserSerializer(serializers.ModelSerializer):
+    """A staff account as managed by a superuser. `is_staff` is always True
+    here (the viewset only lists staff), so promoting to superuser can never
+    leave someone superuser-but-not-staff."""
+
+    password = serializers.CharField(
+        write_only=True, required=False, validators=[validate_password]
+    )
+
+    class Meta:
+        model = User
+        fields = [
+            'id',
+            'username',
+            'email',
+            'first_name',
+            'last_name',
+            'is_active',
+            'is_superuser',
+            'date_joined',
+            'last_login',
+            'password',
+        ]
+        read_only_fields = ['date_joined', 'last_login']
+        extra_kwargs = {'email': {'required': True, 'allow_blank': False}}
+
+    def validate_email(self, value):
+        exclude_pk = self.instance.pk if self.instance else None
+        if email_taken(value, exclude_pk=exclude_pk):
+            raise serializers.ValidationError(
+                'An account with this email already exists.'
+            )
+        return value
+
+    def validate(self, attrs):
+        if self.instance is None:
+            if not attrs.get('password'):
+                raise serializers.ValidationError(
+                    {'password': 'This field is required.'}
+                )
+            return attrs
+        # Blocking self-demotion also covers the last superuser: only a
+        # superuser can call this, so the last one can only be themselves.
+        is_self = self.instance.pk == self.context['request'].user.pk
+        changes_own_access = any(
+            field in attrs and attrs[field] != getattr(self.instance, field)
+            for field in ('is_superuser', 'is_active')
+        )
+        if is_self and changes_own_access:
+            raise serializers.ValidationError(
+                "You can't change your own superuser or active status."
+            )
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        password = validated_data.pop('password')
+        user = User(**validated_data, is_staff=True)
+        user.set_password(password)
+        user.save()
+        return user
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        if password:
+            instance.set_password(password)
+        instance.save()
         return instance

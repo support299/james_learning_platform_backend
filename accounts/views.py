@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Q
-from rest_framework import generics, permissions, viewsets
+from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,7 +13,9 @@ from courses.serializers import (
     EnrollmentSerializer,
 )
 
+from .permissions import IsSuperUser
 from .serializers import (
+    AdminUserSerializer,
     EmailTokenObtainPairSerializer,
     RegisterSerializer,
     StudentSerializer,
@@ -31,6 +33,7 @@ def tokens_for(user):
         'refresh': str(refresh),
         'access': str(refresh.access_token),
         'is_admin': user.is_staff,
+        'is_superadmin': user.is_superuser,
     }
 
 
@@ -138,3 +141,77 @@ class StudentViewSet(viewsets.ModelViewSet):
         return Response(
             EnrollmentSerializer(self.enrollments_of(student), many=True).data
         )
+
+
+class AdminUserViewSet(viewsets.ModelViewSet):
+    """Superuser-only management of staff accounts.
+
+    Endpoints:
+      GET    /api/auth/admins/               list staff (?search=)
+      POST   /api/auth/admins/               create a staff account
+      PATCH  /api/auth/admins/{id}/          edit; is_superuser promotes/demotes
+      DELETE /api/auth/admins/{id}/          delete
+      POST   /api/auth/admins/promote/       {"user_id": n} make an existing
+                                             (non-staff) account staff
+      POST   /api/auth/admins/{id}/demote/   staff -> plain student account
+    """
+
+    serializer_class = AdminUserSerializer
+    permission_classes = [IsSuperUser]
+    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
+
+    def get_queryset(self):
+        queryset = User.objects.filter(is_staff=True).order_by(
+            '-is_superuser', 'username'
+        )
+        search = self.request.query_params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(username__icontains=search)
+                | Q(email__icontains=search)
+                | Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+            )
+        return queryset
+
+    def destroy(self, request, *args, **kwargs):
+        if self.get_object().pk == request.user.pk:
+            return Response(
+                {'detail': "You can't delete your own account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=['post'])
+    def promote(self, request):
+        try:
+            target = User.objects.get(pk=request.data.get('user_id'))
+        except (User.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {'detail': 'No such user.'}, status=status.HTTP_404_NOT_FOUND
+            )
+        if target.is_staff:
+            return Response(
+                {'detail': 'That account is already staff.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        target.is_staff = True
+        target.save(update_fields=['is_staff'])
+        return Response(self.get_serializer(target).data)
+
+    @action(detail=True, methods=['post'])
+    def demote(self, request, pk=None):
+        target = self.get_object()
+        if target.pk == request.user.pk:
+            return Response(
+                {'detail': "You can't remove your own admin access."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if target.is_superuser:
+            return Response(
+                {'detail': 'Remove superuser status first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        target.is_staff = False
+        target.save(update_fields=['is_staff'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
