@@ -190,6 +190,7 @@ class AgentCarrierRequirement(models.Model):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.NOT_STARTED
     )
+    writing_number = models.PositiveBigIntegerField(null=True, blank=True)
     is_required = models.BooleanField(default=True)
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -227,6 +228,11 @@ class AgentCarrierRequirement(models.Model):
 
 
 class AgentChecklistItem(models.Model):
+    class Status(models.TextChoices):
+        INCOMPLETE = 'incomplete', 'Incomplete'
+        COMPLETED = 'completed', 'Completed'
+        APPROVED = 'approved', 'Approved'
+
     agent = models.ForeignKey(
         OnboardingAgent, related_name='checklist_items', on_delete=models.CASCADE
     )
@@ -238,6 +244,9 @@ class AgentChecklistItem(models.Model):
         blank=True,
     )
     label = models.CharField(max_length=240)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.INCOMPLETE
+    )
     is_required = models.BooleanField(default=True)
     is_completed = models.BooleanField(default=False)
     completed_by = models.ForeignKey(

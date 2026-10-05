@@ -570,6 +570,13 @@ class OnboardingApiTest(APITestCase):
         )
         assert comment.status_code == 200, comment.data
 
+        checklist_approved = self.client.patch(
+            f"/api/onboarding/agents/{me.data['id']}/checklist/{item_id}/",
+            {'status': 'approved'},
+            format='json',
+        )
+        assert checklist_approved.status_code == 403
+
         owner = self.client.patch(
             f"/api/onboarding/agents/{me.data['id']}/checklist/{item_id}/",
             {'owner_id': self.assistant.id},
@@ -664,3 +671,47 @@ class OnboardingApiTest(APITestCase):
         me = self.client.get('/api/onboarding/me/')
         assert me.status_code == 200, me.data
         assert me.data['id'] == created.data['id']
+
+    def test_checklist_approved_status_and_writing_number(self):
+        data, _ = self._create_agent()
+        item_id = data['checklist'][0]['id']
+        req_id = data['carriers'][0]['id']
+        assert data['checklist'][0]['status'] == 'incomplete'
+        assert data['carriers'][0]['writing_number'] is None
+
+        self.auth(self.assistant)
+        approved = self.client.patch(
+            f"/api/onboarding/agents/{data['id']}/checklist/{item_id}/",
+            {'status': 'approved'},
+            format='json',
+        )
+        assert approved.status_code == 200, approved.data
+        assert approved.data['status'] == 'approved'
+        assert approved.data['is_completed'] is True
+
+        audit = self.client.get('/api/onboarding/audit/')
+        labels = {row['label'] for row in audit.data['results']}
+        assert data['checklist'][0]['label'] not in labels
+
+        number = self.client.patch(
+            f"/api/onboarding/agents/{data['id']}/carriers/{req_id}/",
+            {'writing_number': 48291},
+            format='json',
+        )
+        assert number.status_code == 200, number.data
+        assert number.data['writing_number'] == 48291
+
+        cleared = self.client.patch(
+            f"/api/onboarding/agents/{data['id']}/carriers/{req_id}/",
+            {'writing_number': None},
+            format='json',
+        )
+        assert cleared.status_code == 200, cleared.data
+        assert cleared.data['writing_number'] is None
+
+        bad = self.client.patch(
+            f"/api/onboarding/agents/{data['id']}/carriers/{req_id}/",
+            {'writing_number': '12a'},
+            format='json',
+        )
+        assert bad.status_code == 400

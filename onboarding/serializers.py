@@ -204,6 +204,7 @@ class AgentChecklistItemSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'label',
+            'status',
             'is_required',
             'is_completed',
             'completed_by',
@@ -247,6 +248,7 @@ class AgentCarrierSerializer(serializers.ModelSerializer):
             'carrier_code',
             'carrier_line',
             'status',
+            'writing_number',
             'is_required',
             'owner',
             'owner_id',

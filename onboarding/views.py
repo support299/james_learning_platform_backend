@@ -380,27 +380,34 @@ class ChecklistItemView(APIView):
         ):
             return Response({'detail': 'You can only update items assigned to you.'}, status=403)
 
-        completed = request.data.get('is_completed')
-        if completed is not None:
-            item.is_completed = bool(completed)
-            if item.is_completed:
-                item.completed_by = request.user
-                item.completed_at = timezone.now()
-                log_event(
-                    request.user,
-                    item.agent,
-                    OnboardingEvent.Action.CHECKLIST_COMPLETED,
-                    item.label,
+        if 'status' in request.data:
+            new_status = request.data['status']
+            valid = {choice.value for choice in AgentChecklistItem.Status}
+            if new_status not in valid:
+                return Response({'status': 'Invalid checklist status.'}, status=400)
+            if (
+                new_status == AgentChecklistItem.Status.APPROVED
+                and role is None
+            ):
+                return Response(
+                    {'detail': 'Only staff can mark a checklist item as approved.'},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-            else:
-                item.completed_by = None
-                item.completed_at = None
-                log_event(
-                    request.user,
-                    item.agent,
-                    OnboardingEvent.Action.CHECKLIST_UNCOMPLETED,
-                    item.label,
-                )
+            _apply_checklist_status(item, new_status, request.user)
+        else:
+            completed = request.data.get('is_completed')
+            if completed is not None:
+                if bool(completed):
+                    if item.status != AgentChecklistItem.Status.APPROVED:
+                        _apply_checklist_status(
+                            item,
+                            AgentChecklistItem.Status.COMPLETED,
+                            request.user,
+                        )
+                else:
+                    _apply_checklist_status(
+                        item, AgentChecklistItem.Status.INCOMPLETE, request.user
+                    )
 
         if 'is_flagged' in request.data:
             if onboarding_role(request.user) is None:
@@ -518,6 +525,11 @@ class CarrierRequirementView(APIView):
                 OnboardingEvent.Action.COMMENT,
                 req.carrier.name,
             )
+        if 'writing_number' in request.data:
+            parsed, error = _parse_writing_number(request.data.get('writing_number'))
+            if error:
+                return Response({'writing_number': error}, status=400)
+            req.writing_number = parsed
         if 'owner_id' in request.data:
             if role is None:
                 return Response(
@@ -628,11 +640,51 @@ class AuditView(APIView):
         return Response({'results': rows, 'count': len(rows)})
 
 
+def _apply_checklist_status(item, new_status, user):
+    item.status = new_status
+    done = new_status != AgentChecklistItem.Status.INCOMPLETE
+    item.is_completed = done
+    if done:
+        item.completed_by = user
+        item.completed_at = timezone.now()
+        log_event(
+            user,
+            item.agent,
+            OnboardingEvent.Action.CHECKLIST_COMPLETED,
+            item.label,
+        )
+    else:
+        item.completed_by = None
+        item.completed_at = None
+        log_event(
+            user,
+            item.agent,
+            OnboardingEvent.Action.CHECKLIST_UNCOMPLETED,
+            item.label,
+        )
+
+
+def _parse_writing_number(raw):
+    if raw is None or raw == '':
+        return None, None
+    if isinstance(raw, bool):
+        return None, 'Enter a whole number.'
+    if isinstance(raw, int):
+        number = raw
+    elif isinstance(raw, str) and raw.strip().isdigit():
+        number = int(raw.strip())
+    else:
+        return None, 'Enter a whole number.'
+    if number > 9223372036854775807:
+        return None, 'Enter a whole number.'
+    return number, None
+
+
 def _audit_row(agent, agent_status, obj, kind):
     if kind == 'checklist':
         label = obj.label
         carrier = None
-        item_status = 'completed' if obj.is_completed else 'incomplete'
+        item_status = obj.status
         item_id = obj.id
     else:
         label = obj.carrier.name
