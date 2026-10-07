@@ -1,3 +1,6 @@
+import secrets
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Count, ProtectedError, Q
@@ -5,7 +8,7 @@ from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -45,7 +48,8 @@ from .serializers import (
     RequirementTemplateSerializer,
     StaffUserSerializer,
 )
-from .services.assign import assign_requirements
+from .services.assign import assign_requirements, publish_catalog_item
+from .services.dashboard_sync import DashboardSyncError, apply_dashboard_snapshot
 from .services.person import PersonLinkError, apply_person_link
 from ghl.services import GhlError, link_mirrored_user
 from .services.progress import annotate_agent
@@ -77,6 +81,23 @@ class CarrierViewSet(viewsets.ModelViewSet):
             return [HasOnboardingAccess()]
         return [IsOnboardingAssistant()]
 
+    def create(self, request, *args, **kwargs):
+        apply_to = request.data.get('apply_to', 'new')
+        if apply_to not in ('new', 'existing'):
+            return Response(
+                {'apply_to': 'Choose existing or new.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            response = super().create(request, *args, **kwargs)
+            if response.status_code != status.HTTP_201_CREATED:
+                return response
+            carrier = Carrier.objects.get(pk=response.data['id'])
+            response.data['applied_to_agents'] = publish_catalog_item(
+                carrier=carrier, apply_to=apply_to
+            )
+            return response
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         try:
@@ -103,6 +124,23 @@ class ChecklistDefinitionViewSet(viewsets.ModelViewSet):
         if self.request.method in ('GET', 'HEAD', 'OPTIONS'):
             return [HasOnboardingAccess()]
         return [IsOnboardingAssistant()]
+
+    def create(self, request, *args, **kwargs):
+        apply_to = request.data.get('apply_to', 'new')
+        if apply_to not in ('new', 'existing'):
+            return Response(
+                {'apply_to': 'Choose existing or new.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        with transaction.atomic():
+            response = super().create(request, *args, **kwargs)
+            if response.status_code != status.HTTP_201_CREATED:
+                return response
+            definition = ChecklistItemDefinition.objects.get(pk=response.data['id'])
+            response.data['applied_to_agents'] = publish_catalog_item(
+                definition=definition, apply_to=apply_to
+            )
+            return response
 
 
 class RequirementTemplateViewSet(viewsets.ModelViewSet):
@@ -771,3 +809,26 @@ class StaffListView(APIView):
             'first_name', 'username'
         )
         return Response(StaffUserSerializer(users, many=True).data)
+
+
+class DashboardSyncToken(BasePermission):
+    def has_permission(self, request, view):
+        expected = getattr(settings, 'DASHBOARD_SYNC_TOKEN', '') or ''
+        got = request.headers.get('X-Sync-Token', '')
+        if not expected or not got:
+            return False
+        return secrets.compare_digest(got, expected)
+
+
+class DashboardSyncView(APIView):
+    """Full team snapshot from the dashboard. Dashboard membership wins."""
+
+    authentication_classes = []
+    permission_classes = [DashboardSyncToken]
+
+    def post(self, request):
+        try:
+            result = apply_dashboard_snapshot(request.data)
+        except DashboardSyncError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result)

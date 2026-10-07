@@ -296,6 +296,7 @@ class OnboardingAgentSerializer(serializers.ModelSerializer):
     completion_percent = serializers.IntegerField(read_only=True)
     outstanding = serializers.ListField(child=serializers.CharField(), read_only=True)
     status = serializers.CharField(read_only=True)
+    dashboard_unassigned = serializers.BooleanField(read_only=True)
     checklist = AgentChecklistItemSerializer(
         source='checklist_items', many=True, read_only=True
     )
@@ -322,6 +323,7 @@ class OnboardingAgentSerializer(serializers.ModelSerializer):
             'state',
             'agent_type',
             'manually_at_risk',
+            'dashboard_unassigned',
             'last_updated_by',
             'completion_percent',
             'outstanding',
@@ -455,6 +457,7 @@ class OnboardingAgentListSerializer(OnboardingAgentSerializer):
             'state',
             'agent_type',
             'manually_at_risk',
+            'dashboard_unassigned',
             'last_updated_by',
             'completion_percent',
             'outstanding',

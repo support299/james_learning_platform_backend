@@ -14,6 +14,7 @@ from .views import (
     RequirementTemplateViewSet,
     SettingsView,
     StaffListView,
+    DashboardSyncView,
     SyncView,
 )
 
@@ -38,6 +39,11 @@ urlpatterns = router.urls + [
     path('audit/', AuditView.as_view(), name='onboarding-audit'),
     path('settings/', SettingsView.as_view(), name='onboarding-settings'),
     path('sync/', SyncView.as_view(), name='onboarding-sync'),
+    path(
+        'dashboard-sync/',
+        DashboardSyncView.as_view(),
+        name='onboarding-dashboard-sync',
+    ),
     path('staff/', StaffListView.as_view(), name='onboarding-staff'),
     path(
         'agents/<int:agent_id>/checklist/<int:item_id>/',

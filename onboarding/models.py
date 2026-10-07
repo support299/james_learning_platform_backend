@@ -105,6 +105,7 @@ class Cohort(models.Model):
     start_date = models.DateField()
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
+    dashboard_team_id = models.UUIDField(null=True, blank=True, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -157,6 +158,8 @@ class OnboardingAgent(models.Model):
         blank=True,
     )
     needs_sync = models.BooleanField(default=True)
+    dashboard_user_id = models.UUIDField(null=True, blank=True, unique=True)
+    dashboard_unassigned = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

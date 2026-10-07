@@ -3,8 +3,11 @@ from django.db import transaction
 from ..models import (
     AgentCarrierRequirement,
     AgentChecklistItem,
+    OnboardingAgent,
     OnboardingSettings,
     RequirementTemplate,
+    TemplateCarrier,
+    TemplateChecklistItem,
 )
 
 
@@ -110,3 +113,97 @@ def assign_requirements(agent, template=None, settings=None):
             owner=agent.owner,
         )
     return agent
+
+
+def default_template():
+    """The template new agents snapshot. Creates one if the catalog has none."""
+    settings = OnboardingSettings.load()
+    template = None
+    if settings.default_template_id:
+        template = RequirementTemplate.objects.filter(
+            pk=settings.default_template_id
+        ).first()
+    if template is None:
+        template = (
+            RequirementTemplate.objects.filter(is_default=True).order_by('pk').first()
+        )
+    if template is None:
+        template = RequirementTemplate.objects.create(
+            name='Default', is_default=True, is_active=True
+        )
+    if settings.default_template_id != template.pk:
+        settings.default_template = template
+        settings.save(update_fields=['default_template', 'updated_at'])
+    return template
+
+
+def publish_catalog_item(*, carrier=None, definition=None, apply_to='new'):
+    """Put a new carrier or checklist item on the default template.
+
+    `apply_to='existing'` also adds a not-started row on every current agent.
+    Rows already on an agent are left alone.
+    """
+    if apply_to not in ('new', 'existing'):
+        raise ValueError('apply_to must be new or existing')
+    template = default_template()
+    if carrier is not None:
+        TemplateCarrier.objects.get_or_create(
+            template=template,
+            carrier=carrier,
+            defaults={'is_required': True},
+        )
+    if definition is not None:
+        TemplateChecklistItem.objects.get_or_create(
+            template=template,
+            definition=definition,
+            defaults={
+                'is_required': definition.is_required,
+                'sort_order': definition.sort_order,
+            },
+        )
+    if apply_to != 'existing':
+        return 0
+    return _backfill_agents(carrier=carrier, definition=definition)
+
+
+def _backfill_agents(*, carrier=None, definition=None):
+    agents = list(OnboardingAgent.objects.all().only('id', 'owner_id'))
+    if carrier is not None:
+        have = set(
+            AgentCarrierRequirement.objects.filter(carrier=carrier).values_list(
+                'agent_id', flat=True
+            )
+        )
+        rows = [
+            AgentCarrierRequirement(
+                agent_id=agent.id,
+                carrier=carrier,
+                is_required=True,
+                owner_id=agent.owner_id,
+            )
+            for agent in agents
+            if agent.id not in have
+        ]
+        AgentCarrierRequirement.objects.bulk_create(rows)
+        return len(rows)
+    if definition is None:
+        return 0
+    have = set(
+        AgentChecklistItem.objects.filter(definition=definition).values_list(
+            'agent_id', flat=True
+        )
+    )
+    rows = [
+        AgentChecklistItem(
+            agent_id=agent.id,
+            definition=definition,
+            label=definition.label,
+            is_required=definition.is_required,
+            sort_order=definition.sort_order,
+            owner_id=agent.owner_id,
+        )
+        for agent in agents
+        if agent.id not in have
+    ]
+    AgentChecklistItem.objects.bulk_create(rows)
+    return len(rows)

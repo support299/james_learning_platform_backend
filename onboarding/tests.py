@@ -280,6 +280,43 @@ class OnboardingApiTest(APITestCase):
         assert status.status_code == 200
         assert status.data['configured'] is False
 
+    def test_catalog_add_asks_existing_or_new_only(self):
+        data, _ = self._create_agent()
+        self.auth(self.assistant)
+        only_new = self.client.post(
+            '/api/onboarding/checklist-definitions/',
+            {'label': 'Future only', 'is_required': True, 'apply_to': 'new'},
+            format='json',
+        )
+        assert only_new.status_code == 201, only_new.data
+        assert only_new.data['applied_to_agents'] == 0
+        detail = self.client.get(f"/api/onboarding/agents/{data['id']}/")
+        assert 'Future only' not in [item['label'] for item in detail.data['checklist']]
+
+        later, _ = self._create_agent(name='Later Person')
+        assert 'Future only' in [item['label'] for item in later['checklist']]
+
+        applied = self.client.post(
+            '/api/onboarding/carriers/',
+            {'name': 'New Health Co', 'line': 'health', 'apply_to': 'existing'},
+            format='json',
+        )
+        assert applied.status_code == 201, applied.data
+        assert applied.data['applied_to_agents'] == 2
+        detail = self.client.get(f"/api/onboarding/agents/{data['id']}/")
+        names = [row['carrier_name'] for row in detail.data['carriers']]
+        assert 'New Health Co' in names
+        original = next(row for row in detail.data['carriers'] if row['carrier_name'] == 'Acme Life')
+        assert original['status'] == 'not_started'
+
+        rejected = self.client.post(
+            '/api/onboarding/carriers/',
+            {'name': 'Nope Co', 'apply_to': 'everyone'},
+            format='json',
+        )
+        assert rejected.status_code == 400
+        assert not Carrier.objects.filter(name='Nope Co').exists()
+
     def test_delete_catalog_items(self):
         unused = Carrier.objects.create(name='Spare Co', code='spare-co')
         self.auth(self.assistant)

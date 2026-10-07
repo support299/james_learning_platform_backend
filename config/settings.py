@@ -241,6 +241,9 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     'socket_timeout': 2,
 }
 
+# Shared secret for the dashboard team snapshot. Empty rejects every push.
+DASHBOARD_SYNC_TOKEN = config('DASHBOARD_SYNC_TOKEN', default='')
+
 CELERY_BEAT_SCHEDULE = {
     'ghl-refresh-tokens': {
         'task': 'ghl.refresh_all_tokens',
